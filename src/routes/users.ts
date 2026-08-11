@@ -1,9 +1,39 @@
 import { Router, Request, Response } from 'express';
 import { UserRepository } from '../repository/UserRepository';
 import { APIResponse, PaginatedResponse, User } from '../types';
+import { normalizeIndianMobile } from '../utils/phoneUtils';
 
 const router = Router();
 const userRepo = new UserRepository();
+
+router.post('/contacts', async (req: Request, res: Response) => {
+  try {
+    const userIds: string[] = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
+    const users = await userRepo.getUsersByIds(userIds);
+
+    const contacts = users.map((user: any) => ({
+      userId: user._id.toString(),
+      name: user.name || '',
+      email: user.email || '',
+      whatsappNumber: normalizeIndianMobile(user.whatsappNumber || user.mobile),
+    }));
+
+    const response: APIResponse<any> = {
+      success: true,
+      data: contacts,
+      timestamp: new Date().toISOString(),
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching user contacts:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch user contacts',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<null>);
+  }
+});
 
 router.get('/search', async (req: Request, res: Response) => {
   try {

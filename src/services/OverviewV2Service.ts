@@ -8,6 +8,17 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 const LEDGER_SOURCES = ['login', 'stockScore', 'stockBacktest', 'etfScore', 'etfBacktest', 'intraday', 'portfolio', 'broker'] as const;
 type LedgerSource = typeof LEDGER_SOURCES[number];
 
+// Same 7 features as getActiveUserCount's "active" definition — login alone never counts.
+const ACTIVE_ACTION_COLLECTIONS: { name: string; dateField: string }[] = [
+  { name: 'liveScoring_User_Tracking', dateField: 'savedDate' },
+  { name: 'backtest_Result', dateField: 'savedDate' },
+  { name: 'etf_liveScoring_User_Tracking', dateField: 'requestedAt' },
+  { name: 'ETF_Backtest_Result', dateField: 'savedDate' },
+  { name: 'intraday_User_Tracking', dateField: 'savedDate' },
+  { name: 'portfolio_details', dateField: 'createdAt' },
+  { name: 'borkrage_details', dateField: 'createdAt' },
+];
+
 function monthKey(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
@@ -54,21 +65,23 @@ export class OverviewV2Service {
 
     const daysInPeriod = Math.max(1, (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
 
-    // Avg Logins/Day - restrict to users matching non-date filters
-    const filteredUserIds = filters.userType || filters.state || filters.district || filters.referralCode
-      ? (await db.collection('userdetail').find(userFilter).project({ _id: 1 }).toArray()).map((u: any) => u._id)
-      : null;
-
-    const loginQuery: any = { loginTime: { $gte: startDate, $lt: endDate }, status: 'SUCCESS' };
-    if (filteredUserIds) loginQuery.userId = { $in: filteredUserIds };
-    const totalLogins = await db.collection('loginlogs').countDocuments(loginQuery);
-    const avgLoginsPerDay = parseFloat((totalLogins / daysInPeriod).toFixed(2));
-
     // Active User Count - ONLY users who signed up in this period AND took ≥1 action (7 features, no login) in this same period
     const signupIdsStr = signups.map((u: any) => u._id.toString());
+    const signupIds = signups.map((u: any) => u._id);
+
+    // Avg Logins/Day - ONLY users who signed up in this period (same cohort as every other Key Metrics card), logins within this same period
+    const loginQuery: any = { loginTime: { $gte: startDate, $lt: endDate }, status: 'SUCCESS' };
+    if (signupIds.length > 0) loginQuery.userId = { $in: signupIds };
+    const totalLogins = signupIds.length > 0 ? await db.collection('loginlogs').countDocuments(loginQuery) : 0;
+    const avgLoginsPerDay = parseFloat((totalLogins / daysInPeriod).toFixed(2));
+    const distinctLoginUsers = signupIds.length > 0
+      ? (await db.collection('loginlogs').distinct('userId', loginQuery)).length
+      : 0;
+    const loginRate = newSignups > 0 ? parseFloat((distinctLoginUsers / newSignups * 100).toFixed(1)) : 0;
     const activeUserCount = signupIdsStr.length > 0
       ? await this.getActiveUserCount(startDate, endDate, signupIdsStr)
       : 0;
+    const activeUserRate = newSignups > 0 ? parseFloat((activeUserCount / newSignups * 100).toFixed(1)) : 0;
 
     // Avg Days to 1st Real Portfolio - for users who signed up in this period
     const avgDaysToFirstPortfolio = signupIdsStr.length > 0
@@ -78,8 +91,12 @@ export class OverviewV2Service {
     return {
       newSignups,
       newPaidCustomers,
+      totalLogins,
+      distinctLoginUsers,
+      loginRate,
       avgLoginsPerDay,
       activeUserCount,
+      activeUserRate,
       avgDaysToFirstPortfolio,
     };
   }
@@ -124,21 +141,31 @@ export class OverviewV2Service {
     return parseFloat((daysList.reduce((a, b) => a + b, 0) / daysList.length).toFixed(1));
   }
 
-  // ============ FEATURE USAGE (fixed avg/user bug) ============
+  // ============ FEATURE USAGE (cohort = signed up in period, usage = cumulative through today) ============
   async getFeatureUsage(filters: FilterOptions): Promise<any[]> {
     const db = getDatabase();
     const userFilter = this.buildUserFilter(filters);
     const { startDate, endDate } = filters.dateRange;
 
-    const hasUserFilter = filters.userType || filters.state || filters.district || filters.referralCode;
-    const filteredUserIdsStr = hasUserFilter
-      ? (await db.collection('userdetail').find(userFilter).project({ _id: 1 }).toArray()).map((u: any) => u._id.toString())
-      : null;
+    const cohort = await db.collection('userdetail').find({
+      ...userFilter,
+      createdOn: { $gte: startDate, $lt: endDate },
+    }).project({ _id: 1 }).toArray();
 
-    const scoped = (query: any) => {
-      if (filteredUserIdsStr) return { ...query, userId: { $in: filteredUserIdsStr } };
-      return query;
-    };
+    const cohortIdsStr = cohort.map((u: any) => u._id.toString());
+
+    const empty = [
+      { key: 'stockScores', label: 'Stock Scores', value: 0, avgPerUser: null },
+      { key: 'stockBacktests', label: 'Stock Backtests', value: 0, avgPerUser: null },
+      { key: 'etfScores', label: 'ETF Scores', value: 0, avgPerUser: null },
+      { key: 'etfBacktests', label: 'ETF Backtests', value: 0, avgPerUser: null },
+      { key: 'liveRealPortfolio', label: 'Live Real Portfolio', value: 0, avgPerUser: null },
+      { key: 'brokerConnected', label: 'Broker Connected', value: 0, avgPerUser: null },
+      { key: 'intradayScores', label: 'Intraday Scores', value: 0, avgPerUser: null },
+    ];
+    if (cohortIdsStr.length === 0) return empty;
+
+    const scoped = (query: any = {}) => ({ ...query, userId: { $in: cohortIdsStr } });
 
     const [
       stockScoreCount, stockScoreUsers,
@@ -149,18 +176,18 @@ export class OverviewV2Service {
       liveRealPortfolios,
       brokerConnectedUsers,
     ] = await Promise.all([
-      db.collection('liveScoring_User_Tracking').countDocuments(scoped({ savedDate: { $gte: startDate, $lt: endDate } })),
-      db.collection('liveScoring_User_Tracking').distinct('userId', scoped({ savedDate: { $gte: startDate, $lt: endDate } })),
-      db.collection('etf_liveScoring_User_Tracking').countDocuments(scoped({ requestedAt: { $gte: startDate, $lt: endDate } })),
-      db.collection('etf_liveScoring_User_Tracking').distinct('userId', scoped({ requestedAt: { $gte: startDate, $lt: endDate } })),
-      db.collection('intraday_User_Tracking').countDocuments(scoped({ savedDate: { $gte: startDate, $lt: endDate } })),
-      db.collection('intraday_User_Tracking').distinct('userId', scoped({ savedDate: { $gte: startDate, $lt: endDate } })),
-      db.collection('backtest_Result').countDocuments(scoped({ savedDate: { $gte: startDate, $lt: endDate }, status: 'Success' })),
-      db.collection('backtest_Result').distinct('userId', scoped({ savedDate: { $gte: startDate, $lt: endDate } })),
-      db.collection('ETF_Backtest_Result').countDocuments(scoped({ savedDate: { $gte: startDate, $lt: endDate }, status: 'Success' })),
-      db.collection('ETF_Backtest_Result').distinct('userId', scoped({ savedDate: { $gte: startDate, $lt: endDate } })),
-      db.collection('portfolio_details').countDocuments(scoped({ createdAt: { $gte: startDate, $lt: endDate }, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })),
-      db.collection('borkrage_details').distinct('userId', scoped({ createdAt: { $gte: startDate, $lt: endDate } })),
+      db.collection('liveScoring_User_Tracking').countDocuments(scoped()),
+      db.collection('liveScoring_User_Tracking').distinct('userId', scoped()),
+      db.collection('etf_liveScoring_User_Tracking').countDocuments(scoped()),
+      db.collection('etf_liveScoring_User_Tracking').distinct('userId', scoped()),
+      db.collection('intraday_User_Tracking').countDocuments(scoped()),
+      db.collection('intraday_User_Tracking').distinct('userId', scoped()),
+      db.collection('backtest_Result').countDocuments(scoped({ status: 'Success' })),
+      db.collection('backtest_Result').distinct('userId', scoped()),
+      db.collection('ETF_Backtest_Result').countDocuments(scoped({ status: 'Success' })),
+      db.collection('ETF_Backtest_Result').distinct('userId', scoped()),
+      db.collection('portfolio_details').countDocuments(scoped({ isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })),
+      db.collection('borkrage_details').distinct('userId', scoped()),
     ]);
 
     const avg = (count: number, uniqueUsers: number) => uniqueUsers > 0 ? parseFloat((count / uniqueUsers).toFixed(1)) : null;
@@ -252,10 +279,10 @@ export class OverviewV2Service {
     };
   }
 
-  // ============ PLOT 3: 30-day activation rate (ignores ALL global filters) ============
-  // Returns ONE row per signup month, Tribe only. Each user judged against their OWN createdOn + 30 days.
+  // ============ PLOT 3: N-day activation rate (ignores ALL global filters) ============
+  // Returns ONE row per signup month, Tribe only. Each user judged against their OWN createdOn + dayWindow.
   // No whole-month eligibility gate — a month with recent signups just shows a lower/partial rate, honestly.
-  async getActivationRate(monthKeys: string[], type: 'real' | 'paper'): Promise<any> {
+  async getActivationRate(monthKeys: string[], type: 'real' | 'paper', dayWindow: number = 30): Promise<any> {
     const db = getDatabase();
     const rows: any[] = [];
 
@@ -291,7 +318,7 @@ export class OverviewV2Service {
         const signupDate = signupDateMap.get(p.userId);
         if (!signupDate) return;
         const days = (new Date(p.createdAt).getTime() - signupDate.getTime()) / (1000 * 60 * 60 * 24);
-        if (days >= 0 && days <= 30) activatedSet.add(p.userId);
+        if (days >= 0 && days <= dayWindow) activatedSet.add(p.userId);
       });
 
       rows.push({
@@ -396,6 +423,260 @@ export class OverviewV2Service {
       values: months.map(k => activeSets.get(k)!.size),
       totalTribeUsers: tribeUsers.length,
     };
+  }
+
+  // ============ Active User Flow: daily breakdown + rolling N-day total, trailing window ending today ============
+  // "Active" = same 7-feature definition as getActiveUserCount (login alone doesn't count).
+  async getActiveUserFlow(userType: string, dayWindow: number): Promise<any> {
+    const db = getDatabase();
+
+    const now = new Date();
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const windowStart = new Date(todayStart.getTime() - (dayWindow - 1) * 24 * 60 * 60 * 1000);
+    const windowEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000); // exclusive, covers all of today
+
+    let eligibleUserIds: string[] | null = null;
+    if (userType && userType !== 'all') {
+      const users = await db.collection('userdetail').find({ type: userType }).project({ _id: 1 }).toArray();
+      eligibleUserIds = users.map((u: any) => u._id.toString());
+    }
+
+    const dayBuckets = new Map<string, Set<string>>();
+    for (let i = 0; i < dayWindow; i++) {
+      const d = new Date(windowStart.getTime() + i * 24 * 60 * 60 * 1000);
+      dayBuckets.set(d.toISOString().slice(0, 10), new Set());
+    }
+
+    await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+      const query: any = { [cfg.dateField]: { $gte: windowStart, $lt: windowEnd } };
+      if (eligibleUserIds) query.userId = { $in: eligibleUserIds };
+
+      const docs = await db.collection(cfg.name)
+        .find(query)
+        .project({ userId: 1, [cfg.dateField]: 1 })
+        .toArray();
+
+      docs.forEach((doc: any) => {
+        const uid = doc.userId?.toString();
+        const rawDate = doc[cfg.dateField];
+        if (!uid || !rawDate) return;
+        const dayKey = new Date(rawDate).toISOString().slice(0, 10);
+        dayBuckets.get(dayKey)?.add(uid);
+      });
+    }));
+
+    const sortedDays = [...dayBuckets.keys()].sort();
+    const dailyRows = sortedDays.map((day) => ({
+      date: day,
+      activeUsers: dayBuckets.get(day)!.size,
+    }));
+
+    const rollingActiveUsers = new Set<string>();
+    dayBuckets.forEach((set) => set.forEach((uid) => rollingActiveUsers.add(uid)));
+
+    const todayKey = todayStart.toISOString().slice(0, 10);
+    const todayActiveUsers = dayBuckets.get(todayKey)?.size || 0;
+    const stickinessRatio = rollingActiveUsers.size > 0
+      ? parseFloat((todayActiveUsers / rollingActiveUsers.size * 100).toFixed(1))
+      : 0;
+
+    return {
+      dayWindow,
+      dailyRows,
+      todayActiveUsers,
+      rollingActiveUsers: rollingActiveUsers.size,
+      stickinessRatio,
+    };
+  }
+
+  // ============ Active User Flow by calendar period: This Month / Last Month / Last 3 Months ============
+  // months[]: per-calendar-month MAU (for the Sum/Avg toggle). avgDailyActiveUsers/stickinessRatio use
+  // the whole selected range's own day-by-day breakdown, not a sum across months (no double counting).
+  async getActiveUserFlowByPeriod(userType: string, period: 'thisMonth' | 'lastMonth' | 'last3Months'): Promise<any> {
+    const db = getDatabase();
+    const now = new Date();
+    const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+
+    let monthStarts: Date[];
+    let rangeStart: Date;
+    let rangeEnd: Date;
+
+    if (period === 'lastMonth') {
+      const lastMonthStart = addMonths(currentMonthStart, -1);
+      monthStarts = [lastMonthStart];
+      rangeStart = lastMonthStart;
+      rangeEnd = currentMonthStart;
+    } else if (period === 'last3Months') {
+      monthStarts = [addMonths(currentMonthStart, -2), addMonths(currentMonthStart, -1), currentMonthStart];
+      rangeStart = monthStarts[0];
+      rangeEnd = addMonths(currentMonthStart, 1);
+    } else {
+      monthStarts = [currentMonthStart];
+      rangeStart = currentMonthStart;
+      rangeEnd = addMonths(currentMonthStart, 1);
+    }
+
+    let eligibleUserIds: string[] | null = null;
+    if (userType && userType !== 'all') {
+      const users = await db.collection('userdetail').find({ type: userType }).project({ _id: 1 }).toArray();
+      eligibleUserIds = users.map((u: any) => u._id.toString());
+    }
+
+    // Pre-populate every day up to "today" so zero-activity days count toward the average, not just days with data.
+    const todayExclusiveEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 24 * 60 * 60 * 1000);
+    const effectiveEnd = rangeEnd < todayExclusiveEnd ? rangeEnd : todayExclusiveEnd;
+
+    const dayBuckets = new Map<string, Set<string>>();
+    for (let d = new Date(rangeStart); d < effectiveEnd; d = new Date(d.getTime() + 24 * 60 * 60 * 1000)) {
+      dayBuckets.set(d.toISOString().slice(0, 10), new Set());
+    }
+
+    await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+      const query: any = { [cfg.dateField]: { $gte: rangeStart, $lt: rangeEnd } };
+      if (eligibleUserIds) query.userId = { $in: eligibleUserIds };
+
+      const docs = await db.collection(cfg.name)
+        .find(query)
+        .project({ userId: 1, [cfg.dateField]: 1 })
+        .toArray();
+
+      docs.forEach((doc: any) => {
+        const uid = doc.userId?.toString();
+        const rawDate = doc[cfg.dateField];
+        if (!uid || !rawDate) return;
+        const dayKey = new Date(rawDate).toISOString().slice(0, 10);
+        dayBuckets.get(dayKey)?.add(uid);
+      });
+    }));
+
+    const months = monthStarts.map((mStart) => {
+      const mEnd = addMonths(mStart, 1);
+      const monthUsers = new Set<string>();
+      dayBuckets.forEach((set, dayKey) => {
+        const d = new Date(dayKey);
+        if (d >= mStart && d < mEnd) set.forEach((uid) => monthUsers.add(uid));
+      });
+      return { monthLabel: monthLabel(monthKey(mStart)), activeUsers: monthUsers.size };
+    });
+
+    const dailyCounts = [...dayBuckets.values()].map((set) => set.size);
+    const sumDailyActiveUsers = dailyCounts.reduce((a, b) => a + b, 0);
+    const avgDailyActiveUsers = dailyCounts.length > 0
+      ? parseFloat((sumDailyActiveUsers / dailyCounts.length).toFixed(1))
+      : 0;
+
+    const combinedSet = new Set<string>();
+    dayBuckets.forEach((set) => set.forEach((uid) => combinedSet.add(uid)));
+    const combinedActiveUsers = combinedSet.size;
+
+    const stickinessRatio = combinedActiveUsers > 0
+      ? parseFloat((avgDailyActiveUsers / combinedActiveUsers * 100).toFixed(1))
+      : 0;
+
+    return {
+      months,
+      combinedActiveUsers,
+      avgDailyActiveUsers,
+      sumDailyActiveUsers,
+      stickinessRatio,
+    };
+  }
+
+  // ============ Active User Breakdown: one bar per bucket, bucketed daily/monthly/quarterly/by day-of-week ============
+  // "sum" per bucket = distinct/unique active users across that bucket's days (not a naive daily-count addition).
+  // "avg" per bucket = mean of the bucket's individual daily active-user counts.
+  async getActiveUserBreakdown(
+    userType: string,
+    granularity: 'daily' | 'monthly' | 'quarterly' | 'daywise',
+    startDate: Date,
+    endDate: Date
+  ): Promise<any> {
+    const db = getDatabase();
+    const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    const rangeEndExclusive = new Date(endDate.getTime() + 24 * 60 * 60 * 1000);
+
+    let eligibleUserIds: string[] | null = null;
+    if (userType && userType !== 'all') {
+      const users = await db.collection('userdetail').find({ type: userType }).project({ _id: 1 }).toArray();
+      eligibleUserIds = users.map((u: any) => u._id.toString());
+    }
+
+    const dayBuckets = new Map<string, Set<string>>();
+    for (let d = new Date(startDate); d < rangeEndExclusive; d = new Date(d.getTime() + 24 * 60 * 60 * 1000)) {
+      dayBuckets.set(d.toISOString().slice(0, 10), new Set());
+    }
+
+    await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+      const query: any = { [cfg.dateField]: { $gte: startDate, $lt: rangeEndExclusive } };
+      if (eligibleUserIds) query.userId = { $in: eligibleUserIds };
+
+      const docs = await db.collection(cfg.name)
+        .find(query)
+        .project({ userId: 1, [cfg.dateField]: 1 })
+        .toArray();
+
+      docs.forEach((doc: any) => {
+        const uid = doc.userId?.toString();
+        const rawDate = doc[cfg.dateField];
+        if (!uid || !rawDate) return;
+        const dayKey = new Date(rawDate).toISOString().slice(0, 10);
+        dayBuckets.get(dayKey)?.add(uid);
+      });
+    }));
+
+    const dayKeys = [...dayBuckets.keys()].sort();
+    const groupMap = new Map<string, string[]>();
+
+    dayKeys.forEach((dayKey) => {
+      const d = new Date(`${dayKey}T00:00:00Z`);
+      let groupKey: string;
+
+      if (granularity === 'monthly') {
+        groupKey = monthKey(d);
+      } else if (granularity === 'quarterly') {
+        groupKey = `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
+      } else if (granularity === 'daywise') {
+        groupKey = String(d.getUTCDay());
+      } else {
+        groupKey = dayKey;
+      }
+
+      if (!groupMap.has(groupKey)) groupMap.set(groupKey, []);
+      groupMap.get(groupKey)!.push(dayKey);
+    });
+
+    const orderedKeys = granularity === 'daywise'
+      ? ['0', '1', '2', '3', '4', '5', '6'].filter((k) => groupMap.has(k))
+      : [...groupMap.keys()].sort();
+
+    const bars = orderedKeys.map((key) => {
+      const daysInGroup = groupMap.get(key)!;
+      const dailySizes = daysInGroup.map((dk) => dayBuckets.get(dk)!.size);
+      const avg = dailySizes.length > 0
+        ? parseFloat((dailySizes.reduce((a, b) => a + b, 0) / dailySizes.length).toFixed(1))
+        : 0;
+
+      const uniqueSet = new Set<string>();
+      daysInGroup.forEach((dk) => dayBuckets.get(dk)!.forEach((uid) => uniqueSet.add(uid)));
+
+      let label: string;
+      if (granularity === 'monthly') {
+        label = monthLabel(key);
+      } else if (granularity === 'quarterly') {
+        const [y, q] = key.split('-Q');
+        label = `Q${q} ${y}`;
+      } else if (granularity === 'daywise') {
+        label = WEEKDAY_NAMES[parseInt(key, 10)];
+      } else {
+        const d = new Date(`${key}T00:00:00Z`);
+        label = `${d.getUTCDate()} ${MONTH_NAMES[d.getUTCMonth()]}`;
+      }
+
+      return { label, sum: uniqueSet.size, avg };
+    });
+
+    return { granularity, bars };
   }
 }
 

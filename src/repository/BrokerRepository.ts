@@ -124,6 +124,14 @@ export class PortfolioRepository extends BaseRepository<Portfolio> {
     } as Filter<Portfolio>);
   }
 
+  async getLiveRealPortfoliosWithHoldings(): Promise<Portfolio[]> {
+    return this.findMany({
+      isInvested: true,
+      borkrageType: { $in: ['kite', 'zebu'] },
+      stockDetails: { $exists: true, $ne: [], $type: 'array' },
+    } as any);
+  }
+
   async getPaperPortfolios(): Promise<Portfolio[]> {
     return this.findMany({
       borkrageType: 'paper_trade',

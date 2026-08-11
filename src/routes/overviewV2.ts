@@ -112,7 +112,8 @@ router.get('/plot/activation-rate', async (req: Request, res: Response) => {
   try {
     const monthKeys = resolveMonthKeys(req);
     const type = (req.query.type as 'real' | 'paper') || 'real';
-    const data = await service.getActivationRate(monthKeys, type);
+    const dayWindow = parseInt((req.query.dayWindow as string) || '30', 10) || 30;
+    const data = await service.getActivationRate(monthKeys, type, dayWindow);
     res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
   } catch (error) {
     console.error('Error fetching activation rate:', error);
@@ -128,6 +129,50 @@ router.get('/plot/live-capital-rate', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching live capital rate:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch live capital rate', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+router.get('/plot/active-user-flow', async (req: Request, res: Response) => {
+  try {
+    const userType = (req.query.userType as string) || 'all';
+    const dayWindow = parseInt((req.query.dayWindow as string) || '30', 10) || 30;
+    const data = await service.getActiveUserFlow(userType, dayWindow);
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching active user flow:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch active user flow', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+router.get('/plot/active-user-flow-monthly', async (req: Request, res: Response) => {
+  try {
+    const userType = (req.query.userType as string) || 'all';
+    const period = (req.query.period as 'thisMonth' | 'lastMonth' | 'last3Months') || 'thisMonth';
+    const data = await service.getActiveUserFlowByPeriod(userType, period);
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching active user flow by period:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch active user flow by period', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+router.get('/plot/active-user-breakdown', async (req: Request, res: Response) => {
+  try {
+    const userType = (req.query.userType as string) || 'all';
+    const granularity = (req.query.granularity as 'daily' | 'monthly' | 'quarterly' | 'daywise') || 'daily';
+
+    const now = new Date();
+    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const defaultEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : defaultStart;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : defaultEnd;
+
+    const data = await service.getActiveUserBreakdown(userType, granularity, startDate, endDate);
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching active user breakdown:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch active user breakdown', timestamp: new Date().toISOString() } as APIResponse<null>);
   }
 });
 

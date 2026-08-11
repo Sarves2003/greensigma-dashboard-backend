@@ -46,4 +46,9 @@ export const COLLECTIONS = {
   BROKER_DETAILS: 'borkrage_details',
   PORTFOLIO: 'portfolio_details',
   INTRADAY_SCORES: 'intraday_User_Tracking',
+  STOCK_LISTS: 'Stock_Lists',
+  REALIZED_RETURNS: 'realizedreturns',
+  WEBINAR_BATCH_DATES: 'webinar_batch_dates',
+  DASHBOARD_USERS: 'dashboard_users',
+  DASHBOARD_ROLE_PERMISSIONS: 'dashboard_role_permissions',
 } as const;

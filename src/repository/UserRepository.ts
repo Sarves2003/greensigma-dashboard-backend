@@ -1,12 +1,18 @@
 import { BaseRepository } from './BaseRepository';
 import { User } from '../types';
-import { Filter } from 'mongodb';
+import { Filter, ObjectId } from 'mongodb';
 
 export class UserRepository extends BaseRepository<User> {
   protected collectionName = 'USERS' as const;
 
   async getUserById(userId: string): Promise<User | null> {
     return this.findOne({ _id: userId } as Filter<User>);
+  }
+
+  async getUsersByIds(userIds: string[]): Promise<User[]> {
+    const objectIds = userIds.filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
+    if (objectIds.length === 0) return [];
+    return this.findMany({ _id: { $in: objectIds } } as any);
   }
 
   async getUserByEmail(email: string): Promise<User | null> {

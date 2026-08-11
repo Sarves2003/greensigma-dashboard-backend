@@ -50,14 +50,50 @@ export interface BrokerDetails {
   accessTokenIssuedAt?: Date;
 }
 
+export interface StockHolding {
+  exchange: string;
+  tradingsymbol: string;
+  quantity: number;
+  price: number;
+  averagePrice?: number;
+  transaction_type?: string;
+  order_type?: string;
+  product?: string;
+}
+
 export interface Portfolio {
   userId: string;
   createdAt: Date;
+  updatedAt?: Date;
   borkrageType?: string;
   isInvested: boolean;
   fromBacktest?: boolean;
   investmentCapital?: number;
-  stockDetails?: Record<string, unknown>;
+  portfolioName?: string;
+  stockDetails?: StockHolding[];
+}
+
+export interface StockListItem {
+  tradingsymbol: string;
+  instrument_token?: number;
+  company_name?: string;
+  industry?: string;
+  last_price: number;
+  timestamp?: Date;
+}
+
+export interface RealizedReturnEntry {
+  tradingsymbol: string;
+  quantity: number;
+  buyPrice: number;
+  closePrice: number;
+  returns: number;
+  timestamp: Date;
+}
+
+export interface RealizedReturnsDoc {
+  portfolioId: unknown;
+  realizedReturns: RealizedReturnEntry[];
 }
 
 export interface IntradayScore {
@@ -121,4 +157,27 @@ export interface Activity {
 export interface CohortData {
   cohortDate: string;
   retention: Record<string, number>;
+}
+
+export interface DashboardUser {
+  _id?: unknown;
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: import('../config/permissions').Role;
+  permissionOverrides?: {
+    grant?: string[];
+    revoke?: string[];
+  };
+  active: boolean;
+  createdAt: Date;
+  updatedAt?: Date;
+  lastLoginAt?: Date;
+}
+
+export interface RolePermissionDoc {
+  _id?: unknown;
+  role: import('../config/permissions').Role;
+  permissions: string[];
+  updatedAt?: Date;
 }
