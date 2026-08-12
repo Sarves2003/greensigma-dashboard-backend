@@ -582,6 +582,101 @@ export class OverviewV2Service {
     };
   }
 
+  // ============ Engagement Distribution: how many distinct days each active user showed up ============
+  // Answers what a single stickiness ratio can't: whether the MAU pool is a broad base of occasional
+  // users, or a small hardcore of daily regulars. Buckets are fixed day-count ranges (not tied to the
+  // period length), so "22+ days" naturally covers everything from a 22-day custom range to a full
+  // Last-3-Months window without needing period-specific bucket edges.
+  private static readonly ENGAGEMENT_BUCKETS = [
+    { label: '1 day', min: 1, max: 1 },
+    { label: '2-3 days', min: 2, max: 3 },
+    { label: '4-7 days', min: 4, max: 7 },
+    { label: '8-14 days', min: 8, max: 14 },
+    { label: '15-21 days', min: 15, max: 21 },
+    { label: '22+ days', min: 22, max: Infinity },
+  ];
+
+  async getEngagementDistribution(
+    userType: string,
+    period: 'thisMonth' | 'lastMonth' | 'last3Months' | 'custom',
+    customStart?: Date,
+    customEnd?: Date
+  ): Promise<any> {
+    const db = getDatabase();
+    const now = new Date();
+    const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+
+    let rangeStart: Date;
+    let rangeEnd: Date; // exclusive
+
+    if (period === 'lastMonth') {
+      rangeStart = addMonths(currentMonthStart, -1);
+      rangeEnd = currentMonthStart;
+    } else if (period === 'last3Months') {
+      rangeStart = addMonths(currentMonthStart, -2);
+      rangeEnd = addMonths(currentMonthStart, 1);
+    } else if (period === 'custom' && customStart && customEnd) {
+      rangeStart = new Date(Date.UTC(customStart.getUTCFullYear(), customStart.getUTCMonth(), customStart.getUTCDate()));
+      rangeEnd = new Date(Date.UTC(customEnd.getUTCFullYear(), customEnd.getUTCMonth(), customEnd.getUTCDate()) + 24 * 60 * 60 * 1000);
+    } else {
+      rangeStart = currentMonthStart;
+      rangeEnd = addMonths(currentMonthStart, 1);
+    }
+
+    let eligibleUserIds: string[] | null = null;
+    if (userType && userType !== 'all') {
+      const users = await db.collection('userdetail').find({ type: userType }).project({ _id: 1 }).toArray();
+      eligibleUserIds = users.map((u: any) => u._id.toString());
+    }
+
+    const todayExclusiveEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 24 * 60 * 60 * 1000);
+    const effectiveEnd = rangeEnd < todayExclusiveEnd ? rangeEnd : todayExclusiveEnd;
+
+    const userDayMap = new Map<string, Set<string>>();
+
+    await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+      const query: any = { [cfg.dateField]: { $gte: rangeStart, $lt: effectiveEnd } };
+      if (eligibleUserIds) query.userId = { $in: eligibleUserIds };
+
+      const docs = await db.collection(cfg.name)
+        .find(query)
+        .project({ userId: 1, [cfg.dateField]: 1 })
+        .toArray();
+
+      docs.forEach((doc: any) => {
+        const uid = doc.userId?.toString();
+        const rawDate = doc[cfg.dateField];
+        if (!uid || !rawDate) return;
+        const dayKey = new Date(rawDate).toISOString().slice(0, 10);
+        if (!userDayMap.has(uid)) userDayMap.set(uid, new Set());
+        userDayMap.get(uid)!.add(dayKey);
+      });
+    }));
+
+    const mau = userDayMap.size;
+    const totalDaysInRange = Math.round((effectiveEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000));
+
+    const buckets = OverviewV2Service.ENGAGEMENT_BUCKETS.map((b) => ({ label: b.label, users: 0 }));
+    userDayMap.forEach((days) => {
+      const count = days.size;
+      const idx = OverviewV2Service.ENGAGEMENT_BUCKETS.findIndex((b) => count >= b.min && count <= b.max);
+      if (idx >= 0) buckets[idx].users++;
+    });
+
+    const bucketsWithPct = buckets.map((b) => ({
+      ...b,
+      pct: mau > 0 ? parseFloat((b.users / mau * 100).toFixed(1)) : 0,
+    }));
+
+    return {
+      rangeStart: rangeStart.toISOString().slice(0, 10),
+      rangeEnd: new Date(effectiveEnd.getTime() - 1).toISOString().slice(0, 10),
+      totalDaysInRange,
+      mau,
+      buckets: bucketsWithPct,
+    };
+  }
+
   // ============ Active User Breakdown: one bar per bucket, bucketed daily/monthly/quarterly/by day-of-week ============
   // "sum" per bucket = distinct/unique active users across that bucket's days (not a naive daily-count addition).
   // "avg" per bucket = mean of the bucket's individual daily active-user counts.

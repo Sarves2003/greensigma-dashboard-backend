@@ -156,6 +156,20 @@ router.get('/plot/active-user-flow-monthly', async (req: Request, res: Response)
   }
 });
 
+router.get('/plot/engagement-distribution', async (req: Request, res: Response) => {
+  try {
+    const userType = (req.query.userType as string) || 'all';
+    const period = (req.query.period as 'thisMonth' | 'lastMonth' | 'last3Months' | 'custom') || 'thisMonth';
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
+    const data = await service.getEngagementDistribution(userType, period, startDate, endDate);
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching engagement distribution:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch engagement distribution', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
 router.get('/plot/active-user-breakdown', async (req: Request, res: Response) => {
   try {
     const userType = (req.query.userType as string) || 'all';

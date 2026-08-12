@@ -153,6 +153,20 @@ router.get('/plot/active-user-flow-monthly', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to fetch active user flow by period', timestamp: new Date().toISOString() });
     }
 });
+router.get('/plot/engagement-distribution', async (req, res) => {
+    try {
+        const userType = req.query.userType || 'all';
+        const period = req.query.period || 'thisMonth';
+        const startDate = req.query.startDate ? new Date(req.query.startDate) : undefined;
+        const endDate = req.query.endDate ? new Date(req.query.endDate) : undefined;
+        const data = await service.getEngagementDistribution(userType, period, startDate, endDate);
+        res.json({ success: true, data, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error fetching engagement distribution:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch engagement distribution', timestamp: new Date().toISOString() });
+    }
+});
 router.get('/plot/active-user-breakdown', async (req, res) => {
     try {
         const userType = req.query.userType || 'all';

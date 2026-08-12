@@ -16,6 +16,8 @@ export declare class OverviewV2Service {
     private computeMonthlyActivePaid;
     getActiveUserFlow(userType: string, dayWindow: number): Promise<any>;
     getActiveUserFlowByPeriod(userType: string, period: 'thisMonth' | 'lastMonth' | 'last3Months'): Promise<any>;
+    private static readonly ENGAGEMENT_BUCKETS;
+    getEngagementDistribution(userType: string, period: 'thisMonth' | 'lastMonth' | 'last3Months' | 'custom', customStart?: Date, customEnd?: Date): Promise<any>;
     getActiveUserBreakdown(userType: string, granularity: 'daily' | 'monthly' | 'quarterly' | 'daywise', startDate: Date, endDate: Date): Promise<any>;
 }
 export { LEDGER_SOURCES, LedgerSource };

@@ -44,6 +44,7 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'card:product-metrics:activation-rate', label: 'Activation Rate', type: 'card', tabKey: 'tab:product-metrics' },
   { key: 'card:product-metrics:active-user-cards', label: 'DAU / MAU / Stickiness Cards', type: 'card', tabKey: 'tab:product-metrics' },
   { key: 'card:product-metrics:active-user-breakdown', label: 'Active User Breakdown Chart', type: 'card', tabKey: 'tab:product-metrics' },
+  { key: 'card:product-metrics:engagement-distribution', label: 'Engagement Distribution', type: 'card', tabKey: 'tab:product-metrics' },
 
   { key: 'tab:gs-health', label: 'Revenue Metrics', type: 'tab' },
   { key: 'card:gs-health:key-metrics', label: 'Key Metrics', type: 'card', tabKey: 'tab:gs-health' },
@@ -95,6 +96,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:product-metrics:activation-rate',
     'card:product-metrics:active-user-cards',
     'card:product-metrics:active-user-breakdown',
+    'card:product-metrics:engagement-distribution',
     'tab:funnel-analysis',
     'card:funnel-analysis:segment1',
     'card:funnel-analysis:segment2',
