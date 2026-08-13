@@ -61,6 +61,11 @@ export const PERMISSIONS: PermissionDef[] = [
 
   { key: 'tab:portfolio', label: 'Portfolio', type: 'tab' },
   { key: 'tab:retention', label: 'Retention', type: 'tab' },
+
+  { key: 'tab:usage-analysis', label: 'Usage Analysis', type: 'tab' },
+  { key: 'card:usage-analysis:main', label: 'Main (Signup & Usage Table)', type: 'card', tabKey: 'tab:usage-analysis' },
+  { key: 'card:usage-analysis:demo-call', label: 'Demo Call Tracking', type: 'card', tabKey: 'tab:usage-analysis' },
+  { key: 'card:usage-analysis:assessment', label: 'Assessment Tracking', type: 'card', tabKey: 'tab:usage-analysis' },
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
@@ -82,6 +87,7 @@ export const ROUTE_PERMISSION_MAP: Record<string, string> = {
   '/api/portfolio': 'tab:portfolio',
   '/api/unrealized-pnl': 'tab:unrealized-pnl',
   '/api/funnel-analysis': 'tab:funnel-analysis',
+  '/api/usage-analysis': 'tab:usage-analysis',
 };
 
 // Default permission grants per role. Seeded into dashboard_role_permissions on
@@ -114,5 +120,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'tab:gs-health',
     'card:gs-health:key-metrics',
     'card:gs-health:trends',
+    'tab:usage-analysis',
+    'card:usage-analysis:main',
+    'card:usage-analysis:demo-call',
+    'card:usage-analysis:assessment',
   ],
 };

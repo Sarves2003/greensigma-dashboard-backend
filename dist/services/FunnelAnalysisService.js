@@ -62,6 +62,14 @@ function normalizePhone(raw) {
 function normalizeEmail(raw) {
     return (raw || '').trim().toLowerCase();
 }
+// Referral codes are free-typed at signup-link creation time, so the same promo code can land in
+// the DB as "stonkzz26", "Stonkzz26", "STONKZZ26", etc. Without normalizing, those fragment into
+// separate funnel rows instead of one — capitalize to a single canonical form before anything else
+// touches the code (including the SIGMA2026/2025 generic-code check below).
+function normalizeReferralCode(raw) {
+    const trimmed = (raw || '').trim();
+    return trimmed ? trimmed.toUpperCase() : null;
+}
 class FunnelAnalysisService {
     constructor() {
         this.registrationCache = null;
@@ -189,7 +197,8 @@ class FunnelAnalysisService {
     // Webinar-driven and organic-default conversions are all one funnel — SIGMA2026 — regardless of
     // which calendar year the webinar happened in, or whether referalCode literally says SIGMA2025.
     computeFunnelTag(referalCode, webinarYear) {
-        const specificCode = referalCode && !GENERIC_REFERRAL_CODES.has(referalCode) ? referalCode : null;
+        const normalizedCode = normalizeReferralCode(referalCode);
+        const specificCode = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode) ? normalizedCode : null;
         const webinarTag = webinarYear ? 'SIGMA2026' : null;
         if (webinarTag && specificCode)
             return `${webinarTag}, ${specificCode}`;

@@ -9,7 +9,7 @@ const LEDGER_SOURCES = ['login', 'stockScore', 'stockBacktest', 'etfScore', 'etf
 type LedgerSource = typeof LEDGER_SOURCES[number];
 
 // Same 7 features as getActiveUserCount's "active" definition — login alone never counts.
-const ACTIVE_ACTION_COLLECTIONS: { name: string; dateField: string }[] = [
+export const ACTIVE_ACTION_COLLECTIONS: { name: string; dateField: string }[] = [
   { name: 'liveScoring_User_Tracking', dateField: 'savedDate' },
   { name: 'backtest_Result', dateField: 'savedDate' },
   { name: 'etf_liveScoring_User_Tracking', dateField: 'requestedAt' },

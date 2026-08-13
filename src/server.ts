@@ -15,6 +15,7 @@ import gsHealthRoutes from './routes/gsHealth';
 import overviewV2Routes from './routes/overviewV2';
 import unrealizedPnlRoutes from './routes/unrealizedPnl';
 import funnelAnalysisRoutes from './routes/funnelAnalysis';
+import usageAnalysisRoutes from './routes/usageAnalysis';
 
 dotenv.config();
 
@@ -51,6 +52,7 @@ app.use('/api/gs-health', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/
 app.use('/api/overview-v2', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/overview-v2']), overviewV2Routes);
 app.use('/api/unrealized-pnl', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/unrealized-pnl']), unrealizedPnlRoutes);
 app.use('/api/funnel-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/funnel-analysis']), funnelAnalysisRoutes);
+app.use('/api/usage-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/usage-analysis']), usageAnalysisRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
