@@ -1,13 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LEDGER_SOURCES = exports.OverviewV2Service = void 0;
+exports.LEDGER_SOURCES = exports.OverviewV2Service = exports.ACTIVE_ACTION_COLLECTIONS = void 0;
 const database_1 = require("../config/database");
 const LOGIN_DATA_CUTOFF = new Date('2026-05-23');
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const LEDGER_SOURCES = ['login', 'stockScore', 'stockBacktest', 'etfScore', 'etfBacktest', 'intraday', 'portfolio', 'broker'];
 exports.LEDGER_SOURCES = LEDGER_SOURCES;
 // Same 7 features as getActiveUserCount's "active" definition — login alone never counts.
-const ACTIVE_ACTION_COLLECTIONS = [
+exports.ACTIVE_ACTION_COLLECTIONS = [
     { name: 'liveScoring_User_Tracking', dateField: 'savedDate' },
     { name: 'backtest_Result', dateField: 'savedDate' },
     { name: 'etf_liveScoring_User_Tracking', dateField: 'requestedAt' },
@@ -387,7 +387,7 @@ class OverviewV2Service {
             const d = new Date(windowStart.getTime() + i * 24 * 60 * 60 * 1000);
             dayBuckets.set(d.toISOString().slice(0, 10), new Set());
         }
-        await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+        await Promise.all(exports.ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
             const query = { [cfg.dateField]: { $gte: windowStart, $lt: windowEnd } };
             if (eligibleUserIds)
                 query.userId = { $in: eligibleUserIds };
@@ -462,7 +462,7 @@ class OverviewV2Service {
         for (let d = new Date(rangeStart); d < effectiveEnd; d = new Date(d.getTime() + 24 * 60 * 60 * 1000)) {
             dayBuckets.set(d.toISOString().slice(0, 10), new Set());
         }
-        await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+        await Promise.all(exports.ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
             const query = { [cfg.dateField]: { $gte: rangeStart, $lt: rangeEnd } };
             if (eligibleUserIds)
                 query.userId = { $in: eligibleUserIds };
@@ -538,7 +538,7 @@ class OverviewV2Service {
         const todayExclusiveEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 24 * 60 * 60 * 1000);
         const effectiveEnd = rangeEnd < todayExclusiveEnd ? rangeEnd : todayExclusiveEnd;
         const userDayMap = new Map();
-        await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+        await Promise.all(exports.ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
             const query = { [cfg.dateField]: { $gte: rangeStart, $lt: effectiveEnd } };
             if (eligibleUserIds)
                 query.userId = { $in: eligibleUserIds };
@@ -594,7 +594,7 @@ class OverviewV2Service {
         for (let d = new Date(startDate); d < rangeEndExclusive; d = new Date(d.getTime() + 24 * 60 * 60 * 1000)) {
             dayBuckets.set(d.toISOString().slice(0, 10), new Set());
         }
-        await Promise.all(ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
+        await Promise.all(exports.ACTIVE_ACTION_COLLECTIONS.map(async (cfg) => {
             const query = { [cfg.dateField]: { $gte: startDate, $lt: rangeEndExclusive } };
             if (eligibleUserIds)
                 query.userId = { $in: eligibleUserIds };

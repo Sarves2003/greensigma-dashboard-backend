@@ -47,6 +47,10 @@ exports.PERMISSIONS = [
     { key: 'card:unrealized-pnl:export', label: 'WhatsApp Export', type: 'card', tabKey: 'tab:unrealized-pnl' },
     { key: 'tab:portfolio', label: 'Portfolio', type: 'tab' },
     { key: 'tab:retention', label: 'Retention', type: 'tab' },
+    { key: 'tab:usage-analysis', label: 'Usage Analysis', type: 'tab' },
+    { key: 'card:usage-analysis:main', label: 'Main (Signup & Usage Table)', type: 'card', tabKey: 'tab:usage-analysis' },
+    { key: 'card:usage-analysis:demo-call', label: 'Demo Call Tracking', type: 'card', tabKey: 'tab:usage-analysis' },
+    { key: 'card:usage-analysis:assessment', label: 'Assessment Tracking', type: 'card', tabKey: 'tab:usage-analysis' },
 ];
 exports.PERMISSION_KEYS = exports.PERMISSIONS.map((p) => p.key);
 exports.TAB_KEYS = exports.PERMISSIONS.filter((p) => p.type === 'tab').map((p) => p.key);
@@ -65,6 +69,7 @@ exports.ROUTE_PERMISSION_MAP = {
     '/api/portfolio': 'tab:portfolio',
     '/api/unrealized-pnl': 'tab:unrealized-pnl',
     '/api/funnel-analysis': 'tab:funnel-analysis',
+    '/api/usage-analysis': 'tab:usage-analysis',
 };
 // Default permission grants per role. Seeded into dashboard_role_permissions on
 // first boot; editable afterward by the Owner through the admin UI.
@@ -96,6 +101,10 @@ exports.DEFAULT_ROLE_PERMISSIONS = {
         'tab:gs-health',
         'card:gs-health:key-metrics',
         'card:gs-health:trends',
+        'tab:usage-analysis',
+        'card:usage-analysis:main',
+        'card:usage-analysis:demo-call',
+        'card:usage-analysis:assessment',
     ],
 };
 //# sourceMappingURL=permissions.js.map

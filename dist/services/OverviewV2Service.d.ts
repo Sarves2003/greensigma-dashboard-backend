@@ -1,6 +1,10 @@
 import { FilterOptions } from '../types';
 declare const LEDGER_SOURCES: readonly ["login", "stockScore", "stockBacktest", "etfScore", "etfBacktest", "intraday", "portfolio", "broker"];
 type LedgerSource = typeof LEDGER_SOURCES[number];
+export declare const ACTIVE_ACTION_COLLECTIONS: {
+    name: string;
+    dateField: string;
+}[];
 export declare class OverviewV2Service {
     private plot5Cache;
     private buildUserFilter;

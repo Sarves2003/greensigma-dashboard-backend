@@ -20,6 +20,7 @@ const gsHealth_1 = __importDefault(require("./routes/gsHealth"));
 const overviewV2_1 = __importDefault(require("./routes/overviewV2"));
 const unrealizedPnl_1 = __importDefault(require("./routes/unrealizedPnl"));
 const funnelAnalysis_1 = __importDefault(require("./routes/funnelAnalysis"));
+const usageAnalysis_1 = __importDefault(require("./routes/usageAnalysis"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 5000;
@@ -48,6 +49,7 @@ app.use('/api/gs-health', auth_1.requireAuth, (0, auth_1.requirePermission)(perm
 app.use('/api/overview-v2', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/overview-v2']), overviewV2_1.default);
 app.use('/api/unrealized-pnl', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/unrealized-pnl']), unrealizedPnl_1.default);
 app.use('/api/funnel-analysis', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/funnel-analysis']), funnelAnalysis_1.default);
+app.use('/api/usage-analysis', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/usage-analysis']), usageAnalysis_1.default);
 // Health check
 app.get('/api/health', (req, res) => {
     res.json({
