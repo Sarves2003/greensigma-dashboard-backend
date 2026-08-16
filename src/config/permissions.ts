@@ -55,6 +55,7 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'card:funnel-analysis:segment2', label: 'All-Time Conversion Table', type: 'card', tabKey: 'tab:funnel-analysis' },
   { key: 'card:funnel-analysis:segment3', label: 'Webinar Batch Analysis', type: 'card', tabKey: 'tab:funnel-analysis' },
   { key: 'card:funnel-analysis:date-manager', label: 'Webinar Date Manager', type: 'card', tabKey: 'tab:funnel-analysis' },
+  { key: 'card:funnel-analysis:location-upload', label: 'Location Data Upload', type: 'card', tabKey: 'tab:funnel-analysis' },
 
   { key: 'tab:unrealized-pnl', label: 'Live P&L', type: 'tab' },
   { key: 'card:unrealized-pnl:export', label: 'WhatsApp Export', type: 'card', tabKey: 'tab:unrealized-pnl' },
@@ -108,6 +109,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:funnel-analysis:segment2',
     'card:funnel-analysis:segment3',
     'card:funnel-analysis:date-manager',
+    'card:funnel-analysis:location-upload',
     'tab:retention',
   ],
   sales_team: [

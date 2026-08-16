@@ -1,10 +1,17 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const FunnelAnalysisService_1 = require("../services/FunnelAnalysisService");
 const dateUtils_1 = require("../utils/dateUtils");
+const locationUpload_1 = __importDefault(require("./locationUpload"));
 const router = (0, express_1.Router)();
 const service = new FunnelAnalysisService_1.FunnelAnalysisService();
+// Nested here (not a separate top-level app.use mount) so it inherits the same auth/permission
+// gate already applied to /api/funnel-analysis in server.ts, without touching server.ts at all.
+router.use('/location-upload', locationUpload_1.default);
 router.get('/segment1', async (req, res) => {
     try {
         const period = req.query.period || 'thisMonth';
@@ -37,6 +44,18 @@ router.get('/segment3', async (req, res) => {
     catch (error) {
         console.error('Error fetching funnel segment 3:', error);
         res.status(500).json({ success: false, error: 'Failed to fetch funnel segment 3', timestamp: new Date().toISOString() });
+    }
+});
+router.get('/segment3/batch-detail', async (req, res) => {
+    try {
+        const datesParam = req.query.dates;
+        const requestedKeys = datesParam ? datesParam.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+        const data = await service.getWebinarBatchDetail(requestedKeys);
+        res.json({ success: true, data, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error fetching webinar batch detail:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch webinar batch detail', timestamp: new Date().toISOString() });
     }
 });
 router.get('/webinar-dates', async (req, res) => {

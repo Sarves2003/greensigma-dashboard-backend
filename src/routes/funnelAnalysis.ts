@@ -2,9 +2,14 @@ import { Router, Request, Response } from 'express';
 import { FunnelAnalysisService } from '../services/FunnelAnalysisService';
 import { APIResponse } from '../types';
 import { getDateRange, getCustomDateRange } from '../utils/dateUtils';
+import locationUploadRoutes from './locationUpload';
 
 const router = Router();
 const service = new FunnelAnalysisService();
+
+// Nested here (not a separate top-level app.use mount) so it inherits the same auth/permission
+// gate already applied to /api/funnel-analysis in server.ts, without touching server.ts at all.
+router.use('/location-upload', locationUploadRoutes);
 
 router.get('/segment1', async (req: Request, res: Response) => {
   try {
@@ -40,6 +45,19 @@ router.get('/segment3', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching funnel segment 3:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch funnel segment 3', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+router.get('/segment3/batch-detail', async (req: Request, res: Response) => {
+  try {
+    const datesParam = req.query.dates as string | undefined;
+    const requestedKeys = datesParam ? datesParam.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+    const strictChennai = req.query.strictChennai === 'true';
+    const data = await service.getWebinarBatchDetail(requestedKeys, strictChennai);
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching webinar batch detail:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch webinar batch detail', timestamp: new Date().toISOString() } as APIResponse<null>);
   }
 });
 

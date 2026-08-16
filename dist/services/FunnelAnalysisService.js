@@ -62,6 +62,21 @@ function normalizePhone(raw) {
 function normalizeEmail(raw) {
     return (raw || '').trim().toLowerCase();
 }
+// userdetail.district is a clean controlled value ("Chennai" exact); the uploaded fallback sheet's
+// location column is free text of unknown shape, so it's matched more loosely (substring contains).
+function classifyLocation(district, uploadedLocation) {
+    const d = (district || '').trim().toLowerCase();
+    if (d === 'chennai')
+        return 'chennai';
+    if (d)
+        return 'non-chennai';
+    const u = (uploadedLocation || '').trim().toLowerCase();
+    if (u.includes('chennai'))
+        return 'chennai';
+    if (u)
+        return 'non-chennai';
+    return 'unknown';
+}
 // Referral codes are free-typed at signup-link creation time, so the same promo code can land in
 // the DB as "stonkzz26", "Stonkzz26", "STONKZZ26", etc. Without normalizing, those fragment into
 // separate funnel rows instead of one — capitalize to a single canonical form before anything else
@@ -355,6 +370,181 @@ class FunnelAnalysisService {
             attemptRows,
             attemptDataAvailable,
         };
+    }
+    // ============ Per-batch detail: registrants, paid, and where those paid people actually came from ============
+    // For each paid person credited to a batch, trace their real origin: did they register for THIS
+    // webinar (Current Webinar), a DIFFERENT one (bucketed by that webinar's date, using their
+    // earliest registration if they have several), or none at all (fall back to their userdetail
+    // referalCode, same normalization as computeFunnelTag).
+    async getWebinarBatchDetail(requestedKeys) {
+        const [paidRows, registrations, masterDates] = await Promise.all([
+            this.fetchPaidList(),
+            this.fetchRegistrations(),
+            this.getSortedMasterDates(),
+        ]);
+        const dateKeys = requestedKeys && requestedKeys.length > 0
+            ? requestedKeys
+            : masterDates.slice(-2).reverse().map((d) => d.toISOString().slice(0, 10));
+        const resolved = paidRows.map((r) => ({ ...r, resolution: this.resolveBatch(r.rawBatchDate, masterDates) }));
+        const registrantsByDate = new Map();
+        for (const r of registrations) {
+            if (!r.webinarDate)
+                continue;
+            const key = r.webinarDate.toISOString().slice(0, 10);
+            registrantsByDate.set(key, (registrantsByDate.get(key) || 0) + 1);
+        }
+        const regDatesByPhone = new Map();
+        const regDatesByEmail = new Map();
+        for (const r of registrations) {
+            if (!r.webinarDate)
+                continue;
+            if (r.phone) {
+                if (!regDatesByPhone.has(r.phone))
+                    regDatesByPhone.set(r.phone, []);
+                regDatesByPhone.get(r.phone).push(r.webinarDate);
+            }
+            if (r.email) {
+                if (!regDatesByEmail.has(r.email))
+                    regDatesByEmail.set(r.email, []);
+                regDatesByEmail.get(r.email).push(r.webinarDate);
+            }
+        }
+        const db = (0, database_1.getDatabase)();
+        const users = await db
+            .collection('userdetail')
+            .find({})
+            .project({ mobile: 1, whatsappNumber: 1, email: 1, referalCode: 1, createdOn: 1, district: 1 })
+            .toArray();
+        const userByPhone = new Map();
+        const userByEmail = new Map();
+        for (const u of users) {
+            const phone = normalizePhone(u.mobile || u.whatsappNumber);
+            const email = normalizeEmail(u.email);
+            if (phone && !userByPhone.has(phone))
+                userByPhone.set(phone, u);
+            if (email && !userByEmail.has(email))
+                userByEmail.set(email, u);
+        }
+        // Fallback location source for anyone missing a district in userdetail — populated via the
+        // Owner-uploaded CSV/Excel list (see LocationUploadService). Safe to query even if the
+        // collection is empty/doesn't exist yet: just yields no fallback matches.
+        const uploads = await db.collection('location_uploads').find({}).project({ phone: 1, email: 1, location: 1 }).toArray();
+        const uploadLocationByPhone = new Map();
+        const uploadLocationByEmail = new Map();
+        for (const u of uploads) {
+            if (u.phone && !uploadLocationByPhone.has(u.phone))
+                uploadLocationByPhone.set(u.phone, u.location);
+            if (u.email && !uploadLocationByEmail.has(u.email))
+                uploadLocationByEmail.set(u.email, u.location);
+        }
+        const resolveLocation = (phone, email) => {
+            const u = (phone && userByPhone.get(phone)) || (email && userByEmail.get(email));
+            const uploadedLocation = uploadLocationByPhone.get(phone) || uploadLocationByEmail.get(email);
+            return classifyLocation(u?.district, uploadedLocation);
+        };
+        return dateKeys.map((key) => {
+            const registrants = registrantsByDate.get(key) || 0;
+            const paidForBatch = resolved.filter((r) => r.resolution.batch && r.resolution.batch.toISOString().slice(0, 10) === key);
+            // person -> { bucket, startDate } — startDate is the webinar-offering date they registered
+            // under (not "Booked On") for webinar buckets, or their userdetail.createdOn for funnel
+            // buckets. null when we genuinely have no anchor point (Unknown bucket) — excluded from the
+            // avg-days-to-pay calculation rather than skewing it with a guess.
+            const breakdown = new Map();
+            const daysToPay = [];
+            for (const p of paidForBatch) {
+                const datesFromPhone = p.phone ? regDatesByPhone.get(p.phone) : undefined;
+                const datesFromEmail = p.email ? regDatesByEmail.get(p.email) : undefined;
+                const dates = datesFromPhone && datesFromPhone.length > 0 ? datesFromPhone : datesFromEmail;
+                let bucket;
+                let startDate = null;
+                if (dates && dates.length > 0) {
+                    const dateKeysForPerson = dates.map((d) => d.toISOString().slice(0, 10));
+                    if (dateKeysForPerson.includes(key)) {
+                        bucket = 'Current Webinar';
+                        startDate = dates.find((d) => d.toISOString().slice(0, 10) === key);
+                    }
+                    else {
+                        const earliest = dates.reduce((a, b) => (a.getTime() < b.getTime() ? a : b));
+                        bucket = earliest.toISOString().slice(0, 10);
+                        startDate = earliest;
+                    }
+                }
+                else {
+                    const u = (p.phone && userByPhone.get(p.phone)) || (p.email && userByEmail.get(p.email));
+                    if (!u) {
+                        bucket = 'Unknown';
+                    }
+                    else {
+                        const normalizedCode = normalizeReferralCode(u.referalCode);
+                        bucket = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode) ? normalizedCode : 'SIGMA2026';
+                        startDate = u.createdOn ? new Date(u.createdOn) : null;
+                    }
+                }
+                if (startDate) {
+                    const paidDate = parseFlexibleDate(p.rawBatchDate);
+                    if (paidDate)
+                        daysToPay.push((paidDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+                }
+                if (!breakdown.has(bucket))
+                    breakdown.set(bucket, []);
+                breakdown.get(bucket).push({ name: p.name, phone: p.phone, email: p.email || null });
+            }
+            const paid = paidForBatch.length;
+            const breakdownRows = [...breakdown.entries()]
+                .map(([source, people]) => ({
+                source,
+                count: people.length,
+                percentage: paid > 0 ? parseFloat(((people.length / paid) * 100).toFixed(1)) : 0,
+                people,
+            }))
+                .sort((a, b) => b.count - a.count);
+            const avgDaysToPay = daysToPay.length > 0
+                ? parseFloat((daysToPay.reduce((a, b) => a + b, 0) / daysToPay.length).toFixed(1))
+                : null;
+            // Chennai vs. Non-Chennai split of this webinar's registrants, and how many of each went on
+            // to pay (matched back into paidForBatch by phone/email). Unregistered/unknown-location
+            // registrants aren't shown as their own card, but they are the reason chennai% + non-chennai%
+            // won't always add up to 100.
+            const regsForBatch = registrations.filter((r) => r.webinarDate && r.webinarDate.toISOString().slice(0, 10) === key);
+            const paidPhones = new Set(paidForBatch.map((p) => p.phone).filter(Boolean));
+            const paidEmails = new Set(paidForBatch.map((p) => p.email).filter(Boolean));
+            let chennaiRegistrants = 0;
+            let nonChennaiRegistrants = 0;
+            let chennaiPaidCount = 0;
+            let nonChennaiPaidCount = 0;
+            for (const r of regsForBatch) {
+                const location = resolveLocation(r.phone, r.email);
+                if (location === 'unknown')
+                    continue;
+                const isPaid = (r.phone && paidPhones.has(r.phone)) || (r.email && paidEmails.has(r.email));
+                if (location === 'chennai') {
+                    chennaiRegistrants++;
+                    if (isPaid)
+                        chennaiPaidCount++;
+                }
+                else {
+                    nonChennaiRegistrants++;
+                    if (isPaid)
+                        nonChennaiPaidCount++;
+                }
+            }
+            const totalRegsForBatch = regsForBatch.length;
+            const chennaiRegistrantPct = totalRegsForBatch > 0 ? parseFloat(((chennaiRegistrants / totalRegsForBatch) * 100).toFixed(1)) : 0;
+            const nonChennaiRegistrantPct = totalRegsForBatch > 0 ? parseFloat(((nonChennaiRegistrants / totalRegsForBatch) * 100).toFixed(1)) : 0;
+            const chennaiConversionPct = chennaiRegistrants > 0 ? parseFloat(((chennaiPaidCount / chennaiRegistrants) * 100).toFixed(1)) : null;
+            const nonChennaiConversionPct = nonChennaiRegistrants > 0 ? parseFloat(((nonChennaiPaidCount / nonChennaiRegistrants) * 100).toFixed(1)) : null;
+            return {
+                label: key,
+                registrants,
+                paid,
+                avgDaysToPay,
+                breakdown: breakdownRows,
+                chennaiRegistrantPct,
+                nonChennaiRegistrantPct,
+                chennaiConversionPct,
+                nonChennaiConversionPct,
+            };
+        });
     }
 }
 exports.FunnelAnalysisService = FunnelAnalysisService;
