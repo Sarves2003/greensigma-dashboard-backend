@@ -62,16 +62,28 @@ function normalizePhone(raw) {
 function normalizeEmail(raw) {
     return (raw || '').trim().toLowerCase();
 }
+// Post-2019 Tamil Nadu district split spun Chennai's metro suburbs off into their own official
+// districts — these are the ones that show up in userdetail.district for people who are
+// practically Chennai-metro but whose district literally says something else. Only consulted when
+// strictChennai is off; when it's on, only the literal word "Chennai" counts, nothing nearby.
+const CHENNAI_NEARBY_AREAS = [
+    'chengalpattu', 'tiruvallur', 'kanchipuram', 'tambaram', 'ambattur', 'avadi',
+    'poonamallee', 'sriperumbudur', 'pallavaram', 'chromepet', 'maraimalai nagar',
+];
 // userdetail.district is a clean controlled value ("Chennai" exact); the uploaded fallback sheet's
 // location column is free text of unknown shape, so it's matched more loosely (substring contains).
-function classifyLocation(district, uploadedLocation) {
+function classifyLocation(district, uploadedLocation, strictChennai) {
     const d = (district || '').trim().toLowerCase();
     if (d === 'chennai')
+        return 'chennai';
+    if (!strictChennai && CHENNAI_NEARBY_AREAS.some((area) => d.includes(area)))
         return 'chennai';
     if (d)
         return 'non-chennai';
     const u = (uploadedLocation || '').trim().toLowerCase();
     if (u.includes('chennai'))
+        return 'chennai';
+    if (!strictChennai && CHENNAI_NEARBY_AREAS.some((area) => u.includes(area)))
         return 'chennai';
     if (u)
         return 'non-chennai';
@@ -376,7 +388,7 @@ class FunnelAnalysisService {
     // webinar (Current Webinar), a DIFFERENT one (bucketed by that webinar's date, using their
     // earliest registration if they have several), or none at all (fall back to their userdetail
     // referalCode, same normalization as computeFunnelTag).
-    async getWebinarBatchDetail(requestedKeys) {
+    async getWebinarBatchDetail(requestedKeys, strictChennai = false) {
         const [paidRows, registrations, masterDates] = await Promise.all([
             this.fetchPaidList(),
             this.fetchRegistrations(),
@@ -440,7 +452,7 @@ class FunnelAnalysisService {
         const resolveLocation = (phone, email) => {
             const u = (phone && userByPhone.get(phone)) || (email && userByEmail.get(email));
             const uploadedLocation = uploadLocationByPhone.get(phone) || uploadLocationByEmail.get(email);
-            return classifyLocation(u?.district, uploadedLocation);
+            return classifyLocation(u?.district, uploadedLocation, strictChennai);
         };
         return dateKeys.map((key) => {
             const registrants = registrantsByDate.get(key) || 0;
@@ -457,28 +469,36 @@ class FunnelAnalysisService {
                 const dates = datesFromPhone && datesFromPhone.length > 0 ? datesFromPhone : datesFromEmail;
                 let bucket;
                 let startDate = null;
+                const u = (p.phone && userByPhone.get(p.phone)) || (p.email && userByEmail.get(p.email));
                 if (dates && dates.length > 0) {
                     const dateKeysForPerson = dates.map((d) => d.toISOString().slice(0, 10));
+                    let webinarLabel;
                     if (dateKeysForPerson.includes(key)) {
-                        bucket = 'Current Webinar';
+                        webinarLabel = 'Current Webinar';
                         startDate = dates.find((d) => d.toISOString().slice(0, 10) === key);
                     }
                     else {
                         const earliest = dates.reduce((a, b) => (a.getTime() < b.getTime() ? a : b));
-                        bucket = earliest.toISOString().slice(0, 10);
+                        webinarLabel = earliest.toISOString().slice(0, 10);
                         startDate = earliest;
                     }
+                    // A webinar match doesn't rule out also carrying a distinct referral code (e.g.
+                    // KIRUBA2026) — when both are true, label the bucket as the combination so this person
+                    // isn't silently folded into a plain webinar bucket indistinguishable from someone with
+                    // no code at all. Buckets stay mutually exclusive (one row each), so counts/percentages
+                    // still sum to the batch's total paid — SIGMA2026/2025 are the generic default, not a
+                    // distinct signal, so they're never appended.
+                    const normalizedCode = u ? normalizeReferralCode(u.referalCode) : null;
+                    const hasSpecificCode = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode);
+                    bucket = hasSpecificCode ? `${webinarLabel}, ${normalizedCode}` : webinarLabel;
+                }
+                else if (!u) {
+                    bucket = 'Unknown';
                 }
                 else {
-                    const u = (p.phone && userByPhone.get(p.phone)) || (p.email && userByEmail.get(p.email));
-                    if (!u) {
-                        bucket = 'Unknown';
-                    }
-                    else {
-                        const normalizedCode = normalizeReferralCode(u.referalCode);
-                        bucket = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode) ? normalizedCode : 'SIGMA2026';
-                        startDate = u.createdOn ? new Date(u.createdOn) : null;
-                    }
+                    const normalizedCode = normalizeReferralCode(u.referalCode);
+                    bucket = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode) ? normalizedCode : 'SIGMA2026';
+                    startDate = u.createdOn ? new Date(u.createdOn) : null;
                 }
                 if (startDate) {
                     const paidDate = parseFlexibleDate(p.rawBatchDate);
@@ -487,7 +507,12 @@ class FunnelAnalysisService {
                 }
                 if (!breakdown.has(bucket))
                     breakdown.set(bucket, []);
-                breakdown.get(bucket).push({ name: p.name, phone: p.phone, email: p.email || null });
+                breakdown.get(bucket).push({
+                    name: p.name,
+                    phone: p.phone,
+                    email: p.email || null,
+                    createdOn: u?.createdOn ? new Date(u.createdOn).toISOString() : null,
+                });
             }
             const paid = paidForBatch.length;
             const breakdownRows = [...breakdown.entries()]
@@ -543,6 +568,10 @@ class FunnelAnalysisService {
                 nonChennaiRegistrantPct,
                 chennaiConversionPct,
                 nonChennaiConversionPct,
+                chennaiRegistrants,
+                nonChennaiRegistrants,
+                chennaiPaidCount,
+                nonChennaiPaidCount,
             };
         });
     }

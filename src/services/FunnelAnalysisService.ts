@@ -530,7 +530,7 @@ export class FunnelAnalysisService {
       // under (not "Booked On") for webinar buckets, or their userdetail.createdOn for funnel
       // buckets. null when we genuinely have no anchor point (Unknown bucket) — excluded from the
       // avg-days-to-pay calculation rather than skewing it with a guess.
-      const breakdown = new Map<string, { name: string; phone: string; email: string | null }[]>();
+      const breakdown = new Map<string, { name: string; phone: string; email: string | null; createdOn: string | null }[]>();
       const daysToPay: number[] = [];
 
       for (const p of paidForBatch) {
@@ -540,26 +540,35 @@ export class FunnelAnalysisService {
 
         let bucket: string;
         let startDate: Date | null = null;
+        const u = (p.phone && userByPhone.get(p.phone)) || (p.email && userByEmail.get(p.email));
 
         if (dates && dates.length > 0) {
           const dateKeysForPerson = dates.map((d) => d.toISOString().slice(0, 10));
+          let webinarLabel: string;
           if (dateKeysForPerson.includes(key)) {
-            bucket = 'Current Webinar';
+            webinarLabel = 'Current Webinar';
             startDate = dates.find((d) => d.toISOString().slice(0, 10) === key)!;
           } else {
             const earliest = dates.reduce((a, b) => (a.getTime() < b.getTime() ? a : b));
-            bucket = earliest.toISOString().slice(0, 10);
+            webinarLabel = earliest.toISOString().slice(0, 10);
             startDate = earliest;
           }
+
+          // A webinar match doesn't rule out also carrying a distinct referral code (e.g.
+          // KIRUBA2026) — when both are true, label the bucket as the combination so this person
+          // isn't silently folded into a plain webinar bucket indistinguishable from someone with
+          // no code at all. Buckets stay mutually exclusive (one row each), so counts/percentages
+          // still sum to the batch's total paid — SIGMA2026/2025 are the generic default, not a
+          // distinct signal, so they're never appended.
+          const normalizedCode = u ? normalizeReferralCode(u.referalCode) : null;
+          const hasSpecificCode = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode);
+          bucket = hasSpecificCode ? `${webinarLabel}, ${normalizedCode}` : webinarLabel;
+        } else if (!u) {
+          bucket = 'Unknown';
         } else {
-          const u = (p.phone && userByPhone.get(p.phone)) || (p.email && userByEmail.get(p.email));
-          if (!u) {
-            bucket = 'Unknown';
-          } else {
-            const normalizedCode = normalizeReferralCode(u.referalCode);
-            bucket = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode) ? normalizedCode : 'SIGMA2026';
-            startDate = u.createdOn ? new Date(u.createdOn) : null;
-          }
+          const normalizedCode = normalizeReferralCode(u.referalCode);
+          bucket = normalizedCode && !GENERIC_REFERRAL_CODES.has(normalizedCode) ? normalizedCode : 'SIGMA2026';
+          startDate = u.createdOn ? new Date(u.createdOn) : null;
         }
 
         if (startDate) {
@@ -568,7 +577,12 @@ export class FunnelAnalysisService {
         }
 
         if (!breakdown.has(bucket)) breakdown.set(bucket, []);
-        breakdown.get(bucket)!.push({ name: p.name, phone: p.phone, email: p.email || null });
+        breakdown.get(bucket)!.push({
+          name: p.name,
+          phone: p.phone,
+          email: p.email || null,
+          createdOn: u?.createdOn ? new Date(u.createdOn).toISOString() : null,
+        });
       }
 
       const paid = paidForBatch.length;

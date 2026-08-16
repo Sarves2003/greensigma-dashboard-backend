@@ -24,7 +24,7 @@ export declare class FunnelAnalysisService {
     getSegment1(startDate: Date, endDate: Date): Promise<any>;
     getSegment2(): Promise<any>;
     getSegment3(): Promise<any>;
-    getWebinarBatchDetail(requestedKeys?: string[]): Promise<any[]>;
+    getWebinarBatchDetail(requestedKeys?: string[], strictChennai?: boolean): Promise<any[]>;
 }
 export {};
 //# sourceMappingURL=FunnelAnalysisService.d.ts.map

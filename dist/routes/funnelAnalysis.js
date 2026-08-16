@@ -50,7 +50,8 @@ router.get('/segment3/batch-detail', async (req, res) => {
     try {
         const datesParam = req.query.dates;
         const requestedKeys = datesParam ? datesParam.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
-        const data = await service.getWebinarBatchDetail(requestedKeys);
+        const strictChennai = req.query.strictChennai === 'true';
+        const data = await service.getWebinarBatchDetail(requestedKeys, strictChennai);
         res.json({ success: true, data, timestamp: new Date().toISOString() });
     }
     catch (error) {
