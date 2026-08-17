@@ -16,6 +16,8 @@ import overviewV2Routes from './routes/overviewV2';
 import unrealizedPnlRoutes from './routes/unrealizedPnl';
 import funnelAnalysisRoutes from './routes/funnelAnalysis';
 import usageAnalysisRoutes from './routes/usageAnalysis';
+import activationTrackerRoutes from './routes/activationTracker';
+import emandateTrackerRoutes from './routes/emandateTracker';
 
 dotenv.config();
 
@@ -53,6 +55,8 @@ app.use('/api/overview-v2', requireAuth, requirePermission(ROUTE_PERMISSION_MAP[
 app.use('/api/unrealized-pnl', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/unrealized-pnl']), unrealizedPnlRoutes);
 app.use('/api/funnel-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/funnel-analysis']), funnelAnalysisRoutes);
 app.use('/api/usage-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/usage-analysis']), usageAnalysisRoutes);
+app.use('/api/activation-tracker', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/activation-tracker']), activationTrackerRoutes);
+app.use('/api/emandate-tracker', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/emandate-tracker']), emandateTrackerRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -67,6 +67,12 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'card:usage-analysis:main', label: 'Main (Signup & Usage Table)', type: 'card', tabKey: 'tab:usage-analysis' },
   { key: 'card:usage-analysis:demo-call', label: 'Demo Call Tracking', type: 'card', tabKey: 'tab:usage-analysis' },
   { key: 'card:usage-analysis:assessment', label: 'Assessment Tracking', type: 'card', tabKey: 'tab:usage-analysis' },
+
+  { key: 'tab:activation-tracker', label: '7 Day Activation', type: 'tab' },
+  { key: 'card:activation-tracker:main', label: 'Activation Table', type: 'card', tabKey: 'tab:activation-tracker' },
+
+  { key: 'tab:emandate-tracker', label: 'Emandate', type: 'tab' },
+  { key: 'card:emandate-tracker:main', label: 'Emandate Table', type: 'card', tabKey: 'tab:emandate-tracker' },
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
@@ -89,6 +95,8 @@ export const ROUTE_PERMISSION_MAP: Record<string, string> = {
   '/api/unrealized-pnl': 'tab:unrealized-pnl',
   '/api/funnel-analysis': 'tab:funnel-analysis',
   '/api/usage-analysis': 'tab:usage-analysis',
+  '/api/activation-tracker': 'tab:activation-tracker',
+  '/api/emandate-tracker': 'tab:emandate-tracker',
 };
 
 // Default permission grants per role. Seeded into dashboard_role_permissions on
@@ -111,6 +119,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:funnel-analysis:date-manager',
     'card:funnel-analysis:location-upload',
     'tab:retention',
+    'tab:activation-tracker',
+    'card:activation-tracker:main',
+    'tab:emandate-tracker',
+    'card:emandate-tracker:main',
   ],
   sales_team: [
     'tab:funnel-analysis',
@@ -126,5 +138,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:usage-analysis:main',
     'card:usage-analysis:demo-call',
     'card:usage-analysis:assessment',
+    'tab:activation-tracker',
+    'card:activation-tracker:main',
+    'tab:emandate-tracker',
+    'card:emandate-tracker:main',
   ],
 };
