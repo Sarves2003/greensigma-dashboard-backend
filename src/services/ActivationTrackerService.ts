@@ -44,6 +44,20 @@ function parseFlexibleDate(raw: string): Date | null {
   return new Date(Date.UTC(year, month, day));
 }
 
+// The sheet's "Submitted at" timestamps aren't zero-padded (e.g. "2026-08-17 3:43:23"), and
+// `new Date(str.replace(' ', 'T'))` silently returns Invalid Date for any single-digit hour —
+// meaning every submission before 10am was getting dropped as if it never happened. Parsing the
+// components manually and building the Date from numeric parts sidesteps the ISO-strictness
+// entirely, since the multi-arg Date constructor doesn't care about padding.
+function parseSheetTimestamp(raw: string): Date | null {
+  const trimmed = (raw || '').trim();
+  const m = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [, year, month, day, hour, minute, second] = m.map(Number);
+  const dt = new Date(year, month - 1, day, hour, minute, second);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
 function normalizePhone(raw: string | null | undefined): string {
   const digits = (raw || '').toString().replace(/\D/g, '');
   return digits.slice(-10);
@@ -125,9 +139,8 @@ export class ActivationTrackerService {
     for (const r of records) {
       const phone = normalizePhone(r['Your Registered Phone Number']);
       if (!phone) continue;
-      const raw = (r['Submitted at'] || '').trim();
-      const submittedAt = raw ? new Date(raw.replace(' ', 'T')) : null;
-      if (!submittedAt || isNaN(submittedAt.getTime())) continue;
+      const submittedAt = parseSheetTimestamp(r['Submitted at']);
+      if (!submittedAt) continue;
       const response = (r["Is there anything you'd like us to help you with?"] || '').trim();
 
       // Same phone can submit this day's form more than once — dedupe to one entry, keeping

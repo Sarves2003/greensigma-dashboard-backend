@@ -53,6 +53,25 @@ export function requirePermission(key: string) {
   };
 }
 
+// Gates a route behind any one of several tab/card permission keys — for endpoints shared by
+// multiple tabs (e.g. webinar batch dates, used by Funnel Analysis, 7 Day Activation, and
+// Emandate), where requiring a single specific tab would wrongly lock out a role that only has
+// one of the other tabs.
+export function requireAnyPermission(...keys: string[]) {
+  keys.forEach((key) => {
+    if (!isValidPermissionKey(key)) {
+      throw new Error(`Unknown permission key passed to requireAnyPermission: ${key}`);
+    }
+  });
+  return (req: AuthedRequest, res: Response, next: NextFunction): void => {
+    if (!keys.some((key) => req.authPermissions?.includes(key))) {
+      res.status(403).json({ success: false, error: 'You do not have access to this section', timestamp: new Date().toISOString() });
+      return;
+    }
+    next();
+  };
+}
+
 export function requireRole(...roles: Role[]) {
   return (req: AuthedRequest, res: Response, next: NextFunction): void => {
     if (!req.authUser || !roles.includes(req.authUser.role)) {

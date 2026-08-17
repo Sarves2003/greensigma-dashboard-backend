@@ -2,13 +2,25 @@ import { Router, Request, Response } from 'express';
 import { FunnelAnalysisService } from '../services/FunnelAnalysisService';
 import { APIResponse } from '../types';
 import { getDateRange, getCustomDateRange } from '../utils/dateUtils';
+import { requirePermission, requireAnyPermission } from '../middleware/auth';
 import locationUploadRoutes from './locationUpload';
 
 const router = Router();
 const service = new FunnelAnalysisService();
 
-// Nested here (not a separate top-level app.use mount) so it inherits the same auth/permission
-// gate already applied to /api/funnel-analysis in server.ts, without touching server.ts at all.
+// Everything except /webinar-dates is exclusive to this tab, so it's gated on tab:funnel-analysis
+// specifically. /webinar-dates is shared with 7 Day Activation and Emandate (both reuse the same
+// webinar_batch_dates collection), so it accepts any one of the three tab permissions instead —
+// otherwise a role with only Emandate/Activation access and no Funnel Analysis access would 403
+// on the date list itself. Server.ts mounts this whole router with just requireAuth (no blanket
+// permission) so these per-route checks are what actually enforce access here.
+router.use((req, res, next) => {
+  if (req.path.startsWith('/webinar-dates')) return next();
+  return requirePermission('tab:funnel-analysis')(req as any, res, next);
+});
+
+// Nested here (not a separate top-level app.use mount) so it inherits the tab:funnel-analysis
+// check applied just above, without touching server.ts at all.
 router.use('/location-upload', locationUploadRoutes);
 
 router.get('/segment1', async (req: Request, res: Response) => {
@@ -61,7 +73,9 @@ router.get('/segment3/batch-detail', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/webinar-dates', async (req: Request, res: Response) => {
+const webinarDatesAccess = requireAnyPermission('tab:funnel-analysis', 'tab:activation-tracker', 'tab:emandate-tracker');
+
+router.get('/webinar-dates', webinarDatesAccess, async (req: Request, res: Response) => {
   try {
     const dates = await service.getBatchDates();
     res.json({ success: true, data: dates, timestamp: new Date().toISOString() } as APIResponse<any>);
@@ -71,7 +85,7 @@ router.get('/webinar-dates', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/webinar-dates', async (req: Request, res: Response) => {
+router.post('/webinar-dates', webinarDatesAccess, async (req: Request, res: Response) => {
   try {
     const dateStr = req.body?.date as string;
     if (!dateStr) {
@@ -87,7 +101,7 @@ router.post('/webinar-dates', async (req: Request, res: Response) => {
   }
 });
 
-router.delete('/webinar-dates/:id', async (req: Request, res: Response) => {
+router.delete('/webinar-dates/:id', webinarDatesAccess, async (req: Request, res: Response) => {
   try {
     await service.removeBatchDate(req.params.id);
     const dates = await service.getBatchDates();

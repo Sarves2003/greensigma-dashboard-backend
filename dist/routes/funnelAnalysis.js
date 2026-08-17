@@ -6,11 +6,23 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const FunnelAnalysisService_1 = require("../services/FunnelAnalysisService");
 const dateUtils_1 = require("../utils/dateUtils");
+const auth_1 = require("../middleware/auth");
 const locationUpload_1 = __importDefault(require("./locationUpload"));
 const router = (0, express_1.Router)();
 const service = new FunnelAnalysisService_1.FunnelAnalysisService();
-// Nested here (not a separate top-level app.use mount) so it inherits the same auth/permission
-// gate already applied to /api/funnel-analysis in server.ts, without touching server.ts at all.
+// Everything except /webinar-dates is exclusive to this tab, so it's gated on tab:funnel-analysis
+// specifically. /webinar-dates is shared with 7 Day Activation and Emandate (both reuse the same
+// webinar_batch_dates collection), so it accepts any one of the three tab permissions instead —
+// otherwise a role with only Emandate/Activation access and no Funnel Analysis access would 403
+// on the date list itself. Server.ts mounts this whole router with just requireAuth (no blanket
+// permission) so these per-route checks are what actually enforce access here.
+router.use((req, res, next) => {
+    if (req.path.startsWith('/webinar-dates'))
+        return next();
+    return (0, auth_1.requirePermission)('tab:funnel-analysis')(req, res, next);
+});
+// Nested here (not a separate top-level app.use mount) so it inherits the tab:funnel-analysis
+// check applied just above, without touching server.ts at all.
 router.use('/location-upload', locationUpload_1.default);
 router.get('/segment1', async (req, res) => {
     try {
@@ -59,7 +71,8 @@ router.get('/segment3/batch-detail', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to fetch webinar batch detail', timestamp: new Date().toISOString() });
     }
 });
-router.get('/webinar-dates', async (req, res) => {
+const webinarDatesAccess = (0, auth_1.requireAnyPermission)('tab:funnel-analysis', 'tab:activation-tracker', 'tab:emandate-tracker');
+router.get('/webinar-dates', webinarDatesAccess, async (req, res) => {
     try {
         const dates = await service.getBatchDates();
         res.json({ success: true, data: dates, timestamp: new Date().toISOString() });
@@ -69,7 +82,7 @@ router.get('/webinar-dates', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to fetch webinar batch dates', timestamp: new Date().toISOString() });
     }
 });
-router.post('/webinar-dates', async (req, res) => {
+router.post('/webinar-dates', webinarDatesAccess, async (req, res) => {
     try {
         const dateStr = req.body?.date;
         if (!dateStr) {
@@ -85,7 +98,7 @@ router.post('/webinar-dates', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to add webinar batch date', timestamp: new Date().toISOString() });
     }
 });
-router.delete('/webinar-dates/:id', async (req, res) => {
+router.delete('/webinar-dates/:id', webinarDatesAccess, async (req, res) => {
     try {
         await service.removeBatchDate(req.params.id);
         const dates = await service.getBatchDates();

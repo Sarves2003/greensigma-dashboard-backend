@@ -20,6 +20,22 @@ router.get('/table', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/overview', async (req: Request, res: Response) => {
+  try {
+    const datesParam = req.query.dates as string;
+    const dateKeys = (datesParam || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (dateKeys.length === 0) {
+      res.status(400).json({ success: false, error: 'dates is required', timestamp: new Date().toISOString() } as APIResponse<null>);
+      return;
+    }
+    const data = await service.getOverview(dateKeys);
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching emandate overview:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch emandate overview', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
 router.post('/remark', async (req: Request, res: Response) => {
   try {
     const { phone, batchDate, remark } = req.body || {};

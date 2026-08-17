@@ -53,7 +53,9 @@ app.use('/api/portfolio', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/
 app.use('/api/gs-health', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/gs-health']), gsHealthRoutes);
 app.use('/api/overview-v2', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/overview-v2']), overviewV2Routes);
 app.use('/api/unrealized-pnl', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/unrealized-pnl']), unrealizedPnlRoutes);
-app.use('/api/funnel-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/funnel-analysis']), funnelAnalysisRoutes);
+// Permission gating for /webinar-dates is applied per-route inside funnelAnalysis.ts instead of
+// here, since that endpoint is shared by 7 Day Activation and Emandate too, not just this tab.
+app.use('/api/funnel-analysis', requireAuth, funnelAnalysisRoutes);
 app.use('/api/usage-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/usage-analysis']), usageAnalysisRoutes);
 app.use('/api/activation-tracker', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/activation-tracker']), activationTrackerRoutes);
 app.use('/api/emandate-tracker', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/emandate-tracker']), emandateTrackerRoutes);

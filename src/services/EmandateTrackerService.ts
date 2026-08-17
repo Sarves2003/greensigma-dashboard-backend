@@ -79,6 +79,8 @@ export interface EmandateDayPayment {
   status: 'captured' | 'refunded' | null;
 }
 
+export type MandateState = 'active' | 'cancelled' | 'halted' | 'not_done' | 'not_applicable';
+
 export interface EmandateRow {
   name: string;
   phone: string;
@@ -86,7 +88,11 @@ export interface EmandateRow {
   paymentStatus: PaymentStatus;
   payment2: EmandateDayPayment | null;
   payment3: EmandateDayPayment | null;
-  mandateState: 'active' | 'cancelled' | 'halted' | 'not_done' | 'not_applicable';
+  mandateState: MandateState;
+  // Both remaining installments captured, or never owed any (paid in full upfront) — nothing left
+  // to chase from this person.
+  settled: boolean;
+  paymentDoneCount: number;
   remark: string;
 }
 
@@ -100,6 +106,39 @@ export interface EmandateSummary {
   cancelled: number;
   halted: number;
   emandateEraApplies: boolean;
+}
+
+export interface EmandateOverviewBucketUser {
+  name: string;
+  phone: string;
+  batchDate: string;
+  paymentDoneCount: number;
+  settled: boolean;
+}
+
+export interface EmandateOverviewBatchPoint {
+  batchDate: string;
+  initialCompletionPct: number | null;
+  fullPaymentCompletionPct: number | null;
+}
+
+export interface EmandateOverview {
+  totalOwesEmandate: number;
+  completed: number;
+  completedPct: number;
+  notDone: number;
+  notDonePct: number;
+  cancelled: number;
+  cancelledPct: number;
+  halted: number;
+  haltedPct: number;
+  emandateEraApplies: boolean;
+  buckets: {
+    notDone: EmandateOverviewBucketUser[];
+    cancelled: EmandateOverviewBucketUser[];
+    halted: EmandateOverviewBucketUser[];
+  };
+  chart: EmandateOverviewBatchPoint[];
 }
 
 export class EmandateTrackerService {
@@ -167,15 +206,24 @@ export class EmandateTrackerService {
     return { byPhone, byEmail };
   }
 
-  async getEmandateTable(batchDateKey: string): Promise<{ rows: EmandateRow[]; summary: EmandateSummary; batchDate: string }> {
+  private toDayPayment(doc: SubscribeDoc | undefined, index: number): EmandateDayPayment | null {
+    const entry = doc?.payment_history?.[index];
+    if (!entry) return null;
+    const status = entry.status === 'captured' || entry.status === 'refunded' ? entry.status : null;
+    return { date: entry.payment_created_at || null, status };
+  }
+
+  // Shared by getEmandateTable (single batch) and getOverview (many batches aggregated) so the
+  // classification/matching logic can't drift between the two views.
+  private buildBatchRows(
+    batchDateKey: string,
+    paidRows: PaidRow[],
+    byPhone: Map<string, SubscribeDoc>,
+    byEmail: Map<string, SubscribeDoc>,
+    remarkDocs: any[]
+  ): { rows: EmandateRow[]; summary: EmandateSummary } {
     const batchDate = new Date(`${batchDateKey}T00:00:00.000Z`);
     const emandateEraApplies = batchDate.getTime() >= EMANDATE_ERA_START.getTime();
-
-    const [paidRows, { byPhone, byEmail }, remarkDocs] = await Promise.all([
-      this.fetchPaidList(),
-      this.fetchBestSubscribeDocs(),
-      getDatabase().collection('emandate_remarks').find({ batchDate: batchDateKey }).toArray(),
-    ]);
 
     const matchesBatch = (rawBatchDate: string): boolean => {
       const parsed = parseFlexibleDate(rawBatchDate);
@@ -187,16 +235,9 @@ export class EmandateTrackerService {
     };
 
     const remarkByPhone = new Map<string, { remark: string; statusOverride: PaymentStatus | null }>();
-    for (const r of remarkDocs as any[]) {
+    for (const r of remarkDocs) {
       remarkByPhone.set(r.phone, { remark: r.remark || '', statusOverride: r.paymentStatusOverride || null });
     }
-
-    const toDayPayment = (doc: SubscribeDoc | undefined, index: number): EmandateDayPayment | null => {
-      const entry = doc?.payment_history?.[index];
-      if (!entry) return null;
-      const status = entry.status === 'captured' || entry.status === 'refunded' ? entry.status : null;
-      return { date: entry.payment_created_at || null, status };
-    };
 
     const rows: EmandateRow[] = [];
     let completed = 0, cancelled = 0, halted = 0, notDone = 0, totalFullPaid = 0;
@@ -210,7 +251,7 @@ export class EmandateTrackerService {
       if (paymentStatus === 'Full Paid') totalFullPaid++;
 
       const subDoc = byPhone.get(p.phone) || byEmail.get(p.email);
-      let mandateState: EmandateRow['mandateState'] = 'not_applicable';
+      let mandateState: MandateState = 'not_applicable';
 
       if (paymentStatus !== 'Full Paid' && emandateEraApplies) {
         if (subDoc?.mandate_status === 'active') {
@@ -228,14 +269,21 @@ export class EmandateTrackerService {
         }
       }
 
+      const payment2 = this.toDayPayment(subDoc, 0);
+      const payment3 = this.toDayPayment(subDoc, 1);
+      const paymentDoneCount = (payment2?.status === 'captured' ? 1 : 0) + (payment3?.status === 'captured' ? 1 : 0);
+      const settled = paymentStatus === 'Full Paid' || (payment2?.status === 'captured' && payment3?.status === 'captured');
+
       rows.push({
         name: p.name,
         phone: p.phone,
         email: p.email,
         paymentStatus,
-        payment2: toDayPayment(subDoc, 0),
-        payment3: toDayPayment(subDoc, 1),
+        payment2,
+        payment3,
         mandateState,
+        settled,
+        paymentDoneCount,
         remark: saved?.remark || '',
       });
     });
@@ -255,7 +303,90 @@ export class EmandateTrackerService {
       emandateEraApplies,
     };
 
+    return { rows, summary };
+  }
+
+  async getEmandateTable(batchDateKey: string): Promise<{ rows: EmandateRow[]; summary: EmandateSummary; batchDate: string }> {
+    const [paidRows, { byPhone, byEmail }, remarkDocs] = await Promise.all([
+      this.fetchPaidList(),
+      this.fetchBestSubscribeDocs(),
+      getDatabase().collection('emandate_remarks').find({ batchDate: batchDateKey }).toArray(),
+    ]);
+
+    const { rows, summary } = this.buildBatchRows(batchDateKey, paidRows, byPhone, byEmail, remarkDocs as any[]);
     return { rows, summary, batchDate: batchDateKey };
+  }
+
+  // Aggregates the same per-batch classification across an arbitrary set of batches (this/previous/
+  // last-2/custom, decided by the frontend) — used by the new overview card above the single-batch
+  // table. Refunded users are excluded from the "full payment completion" denominator since they
+  // were never going to complete further payments in the first place.
+  async getOverview(batchDateKeys: string[]): Promise<EmandateOverview> {
+    const [paidRows, { byPhone, byEmail }, remarkDocs] = await Promise.all([
+      this.fetchPaidList(),
+      this.fetchBestSubscribeDocs(),
+      getDatabase().collection('emandate_remarks').find({ batchDate: { $in: batchDateKeys } }).toArray(),
+    ]);
+
+    const remarksByBatch = new Map<string, any[]>();
+    for (const r of remarkDocs as any[]) {
+      if (!remarksByBatch.has(r.batchDate)) remarksByBatch.set(r.batchDate, []);
+      remarksByBatch.get(r.batchDate)!.push(r);
+    }
+
+    let totalOwesEmandate = 0, completed = 0, notDone = 0, cancelled = 0, halted = 0;
+    let emandateEraApplies = false;
+    const buckets: EmandateOverview['buckets'] = { notDone: [], cancelled: [], halted: [] };
+    const chart: EmandateOverviewBatchPoint[] = [];
+
+    for (const batchDateKey of batchDateKeys) {
+      const { rows, summary } = this.buildBatchRows(batchDateKey, paidRows, byPhone, byEmail, remarksByBatch.get(batchDateKey) || []);
+
+      totalOwesEmandate += summary.remaining;
+      completed += summary.completed;
+      notDone += summary.notDone;
+      cancelled += summary.cancelled;
+      halted += summary.halted;
+      if (summary.emandateEraApplies) emandateEraApplies = true;
+
+      for (const row of rows) {
+        const bucketEntry: EmandateOverviewBucketUser = {
+          name: row.name,
+          phone: row.phone,
+          batchDate: batchDateKey,
+          paymentDoneCount: row.paymentDoneCount,
+          settled: row.settled,
+        };
+        if (row.mandateState === 'not_done') buckets.notDone.push(bucketEntry);
+        else if (row.mandateState === 'cancelled') buckets.cancelled.push(bucketEntry);
+        else if (row.mandateState === 'halted') buckets.halted.push(bucketEntry);
+      }
+
+      const refundedCount = rows.filter((r) => r.paymentStatus === 'Refunded').length;
+      const settledCount = rows.filter((r) => r.settled).length;
+      const fullPaymentDenominator = summary.totalInitialPaid - refundedCount;
+
+      chart.push({
+        batchDate: batchDateKey,
+        initialCompletionPct: summary.remaining > 0 ? summary.completedPct : null,
+        fullPaymentCompletionPct: fullPaymentDenominator > 0 ? parseFloat(((settledCount / fullPaymentDenominator) * 100).toFixed(1)) : null,
+      });
+    }
+
+    return {
+      totalOwesEmandate,
+      completed,
+      completedPct: totalOwesEmandate > 0 ? parseFloat(((completed / totalOwesEmandate) * 100).toFixed(1)) : 0,
+      notDone,
+      notDonePct: totalOwesEmandate > 0 ? parseFloat(((notDone / totalOwesEmandate) * 100).toFixed(1)) : 0,
+      cancelled,
+      cancelledPct: totalOwesEmandate > 0 ? parseFloat(((cancelled / totalOwesEmandate) * 100).toFixed(1)) : 0,
+      halted,
+      haltedPct: totalOwesEmandate > 0 ? parseFloat(((halted / totalOwesEmandate) * 100).toFixed(1)) : 0,
+      emandateEraApplies,
+      buckets,
+      chart,
+    };
   }
 
   async saveRemark(phone: string, batchDate: string, remark: string): Promise<void> {
