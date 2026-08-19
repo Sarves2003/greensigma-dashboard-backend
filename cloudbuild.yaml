@@ -1,0 +1,35 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '-t'
+      - '$_AR_HOSTNAME/$PROJECT_ID/greensigma-dashboard/greensigma-dashboard-backend:$COMMIT_SHA'
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '$_AR_HOSTNAME/$PROJECT_ID/greensigma-dashboard/greensigma-dashboard-backend:$COMMIT_SHA'
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - $_SERVICE_NAME
+      - '--image'
+      - '$_AR_HOSTNAME/$PROJECT_ID/greensigma-dashboard/greensigma-dashboard-backend:$COMMIT_SHA'
+      - '--region'
+      - '$_DEPLOY_REGION'
+      - '--platform'
+      - $_PLATFORM
+      - '--allow-unauthenticated'
+      - '--set-secrets'
+      - 'MONGODB_URI=greensigma-dashboard-mongo-uri:latest,JWT_SECRET=greensigma-dashboard-jwt-secret:latest,INITIAL_OWNER_EMAIL=greensigma-dashboard-owner-email:latest,INITIAL_OWNER_PASSWORD=greensigma-dashboard-owner-password:latest'
+timeout: 1200s
+images:
+  - '$_AR_HOSTNAME/$PROJECT_ID/greensigma-dashboard/greensigma-dashboard-backend:$COMMIT_SHA'
+
+substitutions:
+  _AR_HOSTNAME: us-central1-docker.pkg.dev
+  _SERVICE_NAME: greensigma-dashboard-backend
+  _DEPLOY_REGION: us-central1
+  _PLATFORM: managed
