@@ -30,7 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: [
-      'https://greensigma-dashboard-frontend-git-322775398411.us-central1.run.app',
+      'https://greensigma-dashboard-frontend-322775398411.us-central1.run.app',
       'http://localhost:4200',
     ],
     credentials: true,
