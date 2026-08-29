@@ -14,7 +14,7 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
-    const result = await authService.login(email, password);
+    const result = await authService.login(email, password, { ip: req.ip, userAgent: (req.headers['user-agent'] as string) || null });
     if (!result) {
       res.status(401).json({ success: false, error: 'Invalid email or password', timestamp: new Date().toISOString() } as APIResponse<null>);
       return;
@@ -28,6 +28,16 @@ router.post('/login', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ success: false, error: 'Login failed', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+router.post('/logout', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    await authService.logout(req.authUser!, { ip: req.ip, userAgent: (req.headers['user-agent'] as string) || null });
+    res.json({ success: true, data: { loggedOut: true }, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ success: false, error: 'Logout failed', timestamp: new Date().toISOString() } as APIResponse<null>);
   }
 });
 

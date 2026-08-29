@@ -4,12 +4,24 @@ import { RolePermissionRepository } from '../repository/RolePermissionRepository
 import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS, ROLES, ROLE_LABELS, Role, isValidPermissionKey } from '../config/permissions';
 import { DashboardUser } from '../types';
 import { AuthService, SafeUser, toSafeUser } from './AuthService';
+import { getDatabase } from '../config/database';
 
 export interface DashboardUserView extends SafeUser {
   permissionOverrides?: { grant?: string[]; revoke?: string[] };
   effectivePermissions: string[];
   createdAt: Date;
   lastLoginAt?: Date;
+}
+
+export interface LoginLogEntry {
+  userId: string;
+  name: string;
+  email: string;
+  role: string;
+  event: 'login' | 'logout';
+  timestamp: string;
+  ip: string | null;
+  userAgent: string | null;
 }
 
 export class AdminService {
@@ -124,5 +136,28 @@ export class AdminService {
       if (!isValidPermissionKey(key)) throw new Error(`Unknown permission key: ${key}`);
     }
     await this.roleRepo.setPermissions(role, permissions);
+  }
+
+  // Most-recent-first, capped — this is a staff audit trail (a handful of accounts logging in a
+  // few times a day), not a high-volume table, so one bounded fetch is plenty without pagination.
+  async getLoginHistory(limit = 2000): Promise<LoginLogEntry[]> {
+    const db = getDatabase();
+    const docs = await db
+      .collection('dashboard_login_logs')
+      .find({})
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .toArray();
+
+    return (docs as any[]).map((d) => ({
+      userId: d.userId,
+      name: d.name || '',
+      email: d.email || '',
+      role: d.role || '',
+      event: d.event,
+      timestamp: new Date(d.timestamp).toISOString(),
+      ip: d.ip || null,
+      userAgent: d.userAgent || null,
+    }));
   }
 }

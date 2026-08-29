@@ -99,4 +99,14 @@ router.put('/role-permissions/:role', async (req: AuthedRequest, res: Response) 
   }
 });
 
+router.get('/login-history', async (req: AuthedRequest, res: Response) => {
+  try {
+    const data = await adminService.getLoginHistory();
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching login history:', error);
+    res.status(500).json({ success: false, error: 'Failed to load login history', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
 export default router;

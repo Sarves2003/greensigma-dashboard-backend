@@ -4,8 +4,15 @@ import { DashboardUserRepository } from '../repository/DashboardUserRepository';
 import { RolePermissionRepository } from '../repository/RolePermissionRepository';
 import { DEFAULT_ROLE_PERMISSIONS, ROLES, Role } from '../config/permissions';
 import { DashboardUser } from '../types';
+import { getDatabase } from '../config/database';
 
 const JWT_EXPIRY = '12h';
+const LOGIN_LOG_COLLECTION = 'dashboard_login_logs';
+
+export interface LoginEventMeta {
+  ip?: string | null;
+  userAgent?: string | null;
+}
 
 export interface AuthTokenPayload {
   sub: string;
@@ -71,7 +78,7 @@ export class AuthService {
     }
   }
 
-  async login(email: string, password: string): Promise<{ token: string; user: SafeUser; permissions: string[] } | null> {
+  async login(email: string, password: string, meta: LoginEventMeta = {}): Promise<{ token: string; user: SafeUser; permissions: string[] } | null> {
     const user = await this.userRepo.getByEmail(email.toLowerCase().trim());
     if (!user || !user.active) return null;
 
@@ -79,6 +86,7 @@ export class AuthService {
     if (!valid) return null;
 
     await this.userRepo.touchLastLogin(String(user._id));
+    await this.logEvent(user, 'login', meta);
 
     const token = jwt.sign(
       { sub: String(user._id), email: user.email, role: user.role } as AuthTokenPayload,
@@ -88,6 +96,28 @@ export class AuthService {
 
     const permissions = await this.getEffectivePermissions(user);
     return { token, user: toSafeUser(user), permissions };
+  }
+
+  // Staff login/logout audit trail — Owner-only visibility, surfaced in Admin Management.
+  // Logout is purely a client "Sign Out" click (JWTs are stateless, there's no server session to
+  // end), so this only ever captures deliberate sign-outs, not tab closes or token expiry — the
+  // same practical scope every stateless-JWT app settles for.
+  async logEvent(user: Pick<DashboardUser, '_id' | 'name' | 'email' | 'role'>, event: 'login' | 'logout', meta: LoginEventMeta = {}): Promise<void> {
+    const db = getDatabase();
+    await db.collection(LOGIN_LOG_COLLECTION).insertOne({
+      userId: String(user._id),
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      event,
+      timestamp: new Date(),
+      ip: meta.ip || null,
+      userAgent: meta.userAgent || null,
+    });
+  }
+
+  async logout(user: Pick<DashboardUser, '_id' | 'name' | 'email' | 'role'>, meta: LoginEventMeta = {}): Promise<void> {
+    await this.logEvent(user, 'logout', meta);
   }
 
   verifyToken(token: string): AuthTokenPayload | null {

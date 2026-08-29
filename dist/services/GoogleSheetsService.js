@@ -30,38 +30,68 @@ class GoogleSheetsService {
         }
         const response = await axios_1.default.get(csvUrl, { responseType: 'text', timeout: 15000 });
         const records = (0, sync_1.parse)(response.data, {
+            columns: true,
             skip_empty_lines: true,
+            relax_column_count: true,
         });
-        const [header, ...dataRows] = records;
-        const rows = dataRows
-            .filter(r => r[0] && r[1]) // must have Year + Month
-            .map(r => {
-            const year = parseInt(r[0], 10);
-            const month = parseInt(r[1], 10);
+        const rows = records
+            .filter((r) => r['Year'] && r['Month']) // must have Year + Month
+            .map((r) => {
+            const year = parseInt(r['Year'], 10);
+            const month = parseInt(r['Month'], 10);
             const monthLabel = `${MONTH_NAMES[month - 1]} ${year}`;
             const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+            const webinarRegisteredCount = this.toNumber(r['Webinar registered Count']);
+            const leadFormRegisteredCount = this.toNumber(r['Lead form Registered Count']);
+            const webinarAdsSpentWithGST = this.toNumber(r['Webinar Ads spent with GST']);
+            const leadAdsSpentWithGST = this.toNumber(r['Demo Lead Ads Spent with GST']);
+            const webinarConvertedCount = this.toNumber(r['Webinar Converter Counts']);
+            const demoConvertedCount = this.toNumber(r['Demo Converted Counts']);
+            const totalRevenue = this.toNumber(r['Total Revenue']);
+            const netRevenue = this.toNumber(r['Net Revenue']);
+            const demoFunnelTotalRevenue = this.toNumber(r['Demo Funnel Total Revenue']);
+            const demoFunnelNetRevenue = this.toNumber(r['Demo Funnel Net Revenue']);
             return {
                 year,
                 month,
                 monthLabel,
                 monthKey,
-                quarter: r[3] || '',
-                registeredCount: this.toNumber(r[4]),
-                totalRevenue: this.toNumber(r[5]),
-                netRevenue: this.toNumber(r[6]),
-                eventSpent: this.toNumber(r[7]),
-                adsSpent: this.toNumber(r[8]),
-                adsSpentWithGST: this.toNumber(r[9]),
-                cpp: this.toNumber(r[10]),
-                netRoas: this.toNumber(r[11]),
-                team: r[12] || '',
-                agencyCost: this.toNumber(r[13]),
-                salesSalary: this.toNumber(r[14]),
-                paidUsers: this.toNumber(r[15]),
-                cac: this.toNumber(r[16]),
-                productCost: this.toNumber(r[17]),
-                cacRatio: this.toNumber(r[18]),
-                notes: (r[20] || '').trim(),
+                quarter: r['Quarter'] || '',
+                webinarRegisteredCount,
+                leadFormRegisteredCount,
+                totalRevenue,
+                netRevenue,
+                demoFunnelTotalRevenue,
+                demoFunnelNetRevenue,
+                eventSpent: this.toNumber(r['Event Spent']),
+                webinarAdsSpent: this.toNumber(r['Webinar Ads spent']),
+                webinarAdsSpentWithGST,
+                leadAdsSpent: this.toNumber(r['Demo Lead Ads Spent']),
+                leadAdsSpentWithGST,
+                ugcInfluencerCost: this.toNumber(r['UGC & Influencer Cost']),
+                webinarCPL: this.toNumber(r['Webinar CPL']),
+                demoFunnelCPL: this.toNumber(r['Demo Funnel CPL']),
+                webinarNetROAS: this.toNumber(r['Webinar Net ROAS']),
+                demoFunnelNetROAS: this.toNumber(r['Demo Funnel Net ROAS']),
+                team: r['Team'] || '',
+                agencyCost: this.toNumber(r['Agency Cost']),
+                salesSalary: this.toNumber(r['Sales Salary']),
+                webinarConvertedCount,
+                demoConvertedCount,
+                webinarCAC: this.toNumber(r['Webinar CAC']),
+                leadFunnelCAC: this.toNumber(r['Lead Funnel CAC']),
+                overallCAC: this.toNumber(r['Overall CAC']),
+                productCost: this.toNumber(r['Product Cost']),
+                cacRatio: this.toNumber(r['CAC Ratio']),
+                notes: (r['Notes'] || '').trim(),
+                registeredCount: webinarRegisteredCount + leadFormRegisteredCount,
+                paidUsers: webinarConvertedCount + demoConvertedCount,
+                adsSpent: webinarAdsSpentWithGST + leadAdsSpentWithGST,
+                cac: this.toNumber(r['Overall CAC']),
+                cpp: this.toNumber(r['Webinar CPL']),
+                netRoas: this.toNumber(r['Webinar Net ROAS']),
+                combinedTotalRevenue: totalRevenue + demoFunnelTotalRevenue,
+                combinedNetRevenue: netRevenue + demoFunnelNetRevenue,
             };
         })
             .sort((a, b) => a.monthKey.localeCompare(b.monthKey));

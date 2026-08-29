@@ -49,6 +49,8 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'tab:gs-health', label: 'Revenue Metrics', type: 'tab' },
   { key: 'card:gs-health:key-metrics', label: 'Key Metrics', type: 'card', tabKey: 'tab:gs-health' },
   { key: 'card:gs-health:trends', label: 'Trends & By-Year Comparison', type: 'card', tabKey: 'tab:gs-health' },
+  { key: 'card:gs-health:webinar', label: 'Webinar Channel Metrics', type: 'card', tabKey: 'tab:gs-health' },
+  { key: 'card:gs-health:leadform', label: 'Lead Form Channel Metrics', type: 'card', tabKey: 'tab:gs-health' },
 
   { key: 'tab:funnel-analysis', label: 'Funnel Analysis', type: 'tab' },
   { key: 'card:funnel-analysis:segment1', label: 'Period Funnel Breakdown', type: 'card', tabKey: 'tab:funnel-analysis' },
@@ -134,6 +136,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'tab:gs-health',
     'card:gs-health:key-metrics',
     'card:gs-health:trends',
+    'card:gs-health:webinar',
+    'card:gs-health:leadform',
     'tab:usage-analysis',
     'card:usage-analysis:main',
     'card:usage-analysis:demo-call',

@@ -3,7 +3,7 @@ export interface EmandateDayPayment {
     date: string | null;
     status: 'captured' | 'refunded' | null;
 }
-export type MandateState = 'active' | 'cancelled' | 'halted' | 'not_done' | 'not_applicable';
+export type MandateState = 'active' | 'halted' | 'cancelled' | 'not_started' | 'not_applicable';
 export interface EmandateRow {
     name: string;
     phone: string;
@@ -11,7 +11,10 @@ export interface EmandateRow {
     paymentStatus: PaymentStatus;
     payment2: EmandateDayPayment | null;
     payment3: EmandateDayPayment | null;
-    mandateState: MandateState;
+    initialDone: boolean;
+    payment2Done: boolean;
+    payment3Done: boolean;
+    currentState: MandateState;
     settled: boolean;
     paymentDoneCount: number;
     remark: string;
@@ -19,12 +22,21 @@ export interface EmandateRow {
 export interface EmandateSummary {
     totalInitialPaid: number;
     totalFullPaid: number;
-    remaining: number;
-    completed: number;
-    completedPct: number;
-    notDone: number;
-    cancelled: number;
-    halted: number;
+    totalRefunded: number;
+    owesEmandate: number;
+    initialDoneCount: number;
+    initialDonePct: number | null;
+    payment2DoneCount: number;
+    payment2DonePct: number | null;
+    payment3DoneCount: number;
+    payment3DonePct: number | null;
+    notDoneAtAllCount: number;
+    notDoneAtAllPct: number | null;
+    cancelledCount: number;
+    cancelledPct: number | null;
+    haltedCount: number;
+    haltedPct: number | null;
+    overallConversionPct: number | null;
     emandateEraApplies: boolean;
 }
 export interface EmandateOverviewBucketUser {
@@ -40,35 +52,46 @@ export interface EmandateOverviewBatchPoint {
     fullPaymentCompletionPct: number | null;
 }
 export interface EmandateOverview {
-    totalOwesEmandate: number;
-    completed: number;
-    completedPct: number;
-    notDone: number;
-    notDonePct: number;
-    cancelled: number;
-    cancelledPct: number;
-    halted: number;
-    haltedPct: number;
+    owesEmandate: number;
+    initialDoneCount: number;
+    initialDonePct: number | null;
+    payment2DoneCount: number;
+    payment2DonePct: number | null;
+    payment3DoneCount: number;
+    payment3DonePct: number | null;
+    notDoneAtAllCount: number;
+    notDoneAtAllPct: number | null;
+    cancelledCount: number;
+    cancelledPct: number | null;
+    haltedCount: number;
+    haltedPct: number | null;
     emandateEraApplies: boolean;
     buckets: {
-        notDone: EmandateOverviewBucketUser[];
+        notDoneAtAll: EmandateOverviewBucketUser[];
         cancelled: EmandateOverviewBucketUser[];
         halted: EmandateOverviewBucketUser[];
     };
     chart: EmandateOverviewBatchPoint[];
 }
+export interface EmandateBatchTableRow extends EmandateSummary {
+    batchDate: string;
+}
 export declare class EmandateTrackerService {
     private paidCache;
+    private subscribeCache;
     private fetchPaidList;
-    private fetchBestSubscribeDocs;
-    private toDayPayment;
+    private fetchSubscribeDocs;
+    private buildSubscribeIndex;
+    private getPersonFacts;
     private buildBatchRows;
+    private loadCommonData;
     getEmandateTable(batchDateKey: string): Promise<{
         rows: EmandateRow[];
         summary: EmandateSummary;
         batchDate: string;
     }>;
     getOverview(batchDateKeys: string[]): Promise<EmandateOverview>;
+    getBatchTable(batchDateKeys: string[]): Promise<EmandateBatchTableRow[]>;
     saveRemark(phone: string, batchDate: string, remark: string): Promise<void>;
     savePaymentStatusOverride(phone: string, batchDate: string, statusOverride: PaymentStatus | null): Promise<void>;
 }

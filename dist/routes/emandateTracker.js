@@ -35,6 +35,22 @@ router.get('/overview', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to fetch emandate overview', timestamp: new Date().toISOString() });
     }
 });
+router.get('/batch-table', async (req, res) => {
+    try {
+        const datesParam = req.query.dates;
+        const dateKeys = (datesParam || '').split(',').map((s) => s.trim()).filter(Boolean);
+        if (dateKeys.length === 0) {
+            res.status(400).json({ success: false, error: 'dates is required', timestamp: new Date().toISOString() });
+            return;
+        }
+        const data = await service.getBatchTable(dateKeys);
+        res.json({ success: true, data, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error fetching emandate batch table:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch emandate batch table', timestamp: new Date().toISOString() });
+    }
+});
 router.post('/remark', async (req, res) => {
     try {
         const { phone, batchDate, remark } = req.body || {};

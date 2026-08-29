@@ -1,6 +1,7 @@
 import { PortfolioRepository } from '../repository/BrokerRepository';
 import { StockListRepository } from '../repository/StockListRepository';
 import { RealizedReturnsRepository, RebalanceStats } from '../repository/RealizedReturnsRepository';
+import { UserRepository } from '../repository/UserRepository';
 import { StockHolding } from '../types';
 
 export interface HoldingPnl {
@@ -13,6 +14,11 @@ export interface HoldingPnl {
   currentValue: number;
   pnl: number;
   pnlPercent: number;
+}
+
+export interface SipEvent {
+  date: string;
+  amount: number;
 }
 
 export interface PortfolioPnl {
@@ -29,41 +35,61 @@ export interface PortfolioPnl {
   rebalanceCount: number;
   stocksTraded: number;
   holdings: HoldingPnl[];
+  // investmentCapital is the ORIGINAL amount the client put in — it is never incremented when a
+  // SIP happens (confirmed against real data: a portfolio can have investmentCapital smaller than
+  // a single one of its own SIP top-ups). null when the field was never saved for this portfolio
+  // (older/manual portfolios) — the frontend falls back to `investedValue` as the AUM base for
+  // those, since `investedValue` already organically includes any SIP-driven share purchases.
+  investmentCapital: number | null;
+  freeCash: number;
+  lockedFreeCash: number;
+  sipEvents: SipEvent[];
+  joinedDate: string | null;
 }
 
 export class UnrealizedPnlService {
   private portfolioRepository = new PortfolioRepository();
   private stockListRepository = new StockListRepository();
   private realizedReturnsRepository = new RealizedReturnsRepository();
+  private userRepository = new UserRepository();
 
   async getLivePortfoliosPnl(): Promise<PortfolioPnl[]> {
     const portfolios = await this.portfolioRepository.getLiveRealPortfoliosWithHoldings();
 
     const allSymbols = new Set<string>();
-    for (const portfolio of portfolios) {
+    const userIds = new Set<string>();
+    for (const portfolio of portfolios as any[]) {
       for (const holding of portfolio.stockDetails || []) {
         if (holding.tradingsymbol) {
           allSymbols.add(holding.tradingsymbol);
         }
       }
+      if (portfolio.userId) userIds.add(portfolio.userId);
     }
 
     const portfolioIds = portfolios.map((p: any) => p._id?.toString()).filter(Boolean);
 
-    const [lastPriceMap, rebalanceStatsMap] = await Promise.all([
+    const [lastPriceMap, rebalanceStatsMap, users] = await Promise.all([
       this.stockListRepository.getLastPriceMap([...allSymbols]),
       this.realizedReturnsRepository.getRebalanceStatsByPortfolioIds(portfolioIds),
+      this.userRepository.getUsersByIds([...userIds]),
     ]);
 
+    const joinedDateByUserId = new Map<string, string>();
+    for (const u of users as any[]) {
+      if (u._id && u.createdOn) joinedDateByUserId.set(u._id.toString(), new Date(u.createdOn).toISOString());
+    }
+
     return portfolios.map((portfolio: any) =>
-      this.computePortfolioPnl(portfolio, lastPriceMap, rebalanceStatsMap)
+      this.computePortfolioPnl(portfolio, lastPriceMap, rebalanceStatsMap, joinedDateByUserId)
     );
   }
 
   private computePortfolioPnl(
     portfolio: any,
     lastPriceMap: Map<string, number>,
-    rebalanceStatsMap: Map<string, RebalanceStats>
+    rebalanceStatsMap: Map<string, RebalanceStats>,
+    joinedDateByUserId: Map<string, string>
   ): PortfolioPnl {
     const holdings: HoldingPnl[] = (portfolio.stockDetails as StockHolding[]).map((stock) => {
       const quantity = stock.quantity || 0;
@@ -92,6 +118,15 @@ export class UnrealizedPnlService {
     const portfolioId = portfolio._id?.toString() || '';
     const rebalanceStats = rebalanceStatsMap.get(portfolioId);
 
+    const sipEvents: SipEvent[] = (portfolio.rebalanceHistory || [])
+      .filter((h: any) => h.sipApplied && h.sipAmount)
+      .map((h: any) => ({ date: new Date(h.date).toISOString(), amount: h.sipAmount }));
+
+    const rawCapital = portfolio.investmentCapital;
+    const investmentCapital = rawCapital !== undefined && rawCapital !== null && !isNaN(Number(rawCapital))
+      ? Number(rawCapital)
+      : null;
+
     return {
       portfolioId,
       userId: portfolio.userId,
@@ -106,6 +141,11 @@ export class UnrealizedPnlService {
       rebalanceCount: rebalanceStats?.rebalanceCount || 0,
       stocksTraded: rebalanceStats?.stocksTraded || 0,
       holdings,
+      investmentCapital,
+      freeCash: portfolio.freeCash || 0,
+      lockedFreeCash: portfolio.lockedFreeCash || 0,
+      sipEvents,
+      joinedDate: joinedDateByUserId.get(portfolio.userId) || null,
     };
   }
 }

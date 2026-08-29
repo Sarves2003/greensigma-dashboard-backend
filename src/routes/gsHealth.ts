@@ -148,7 +148,7 @@ router.get('/key-metrics', async (req: Request, res: Response) => {
     });
 
     const data = {
-      revenue: buildCategory((r) => r.netRevenue, 'sum', false),
+      revenue: buildCategory((r) => r.combinedNetRevenue, 'sum', false),
       cac: buildCategory((r) => r.cac, 'avg', true),
       paidUsers: buildCategory((r) => r.paidUsers, 'sum', false),
       adsSpent: buildCategory((r) => r.adsSpent, 'sum', true),
@@ -162,6 +162,59 @@ router.get('/key-metrics', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch GS Health key metrics',
+      timestamp: new Date().toISOString(),
+    } as APIResponse<null>);
+  }
+});
+
+// Same breakdown shape as /key-metrics, scoped to a single acquisition channel — each field maps
+// 1:1 to that channel's own columns in the sheet (never derived/combined), so these numbers are
+// exactly what the business already tracks per channel, nothing re-interpreted.
+router.get('/channel-metrics', async (req: Request, res: Response) => {
+  try {
+    const channel = req.query.channel as string;
+    if (channel !== 'webinar' && channel !== 'leadform') {
+      res.status(400).json({ success: false, error: 'channel must be "webinar" or "leadform"', timestamp: new Date().toISOString() } as APIResponse<null>);
+      return;
+    }
+
+    const allRows = await sheetsService.getMonthlyData();
+    if (allRows.length === 0) {
+      res.json({ success: true, data: null, timestamp: new Date().toISOString() } as APIResponse<any>);
+      return;
+    }
+
+    const buildCategory = (extract: (r: GsHealthRow) => number, quarterAgg: 'sum' | 'avg', lowerIsBetter: boolean) => ({
+      ...buildMetricBreakdown(allRows, extract, quarterAgg),
+      ...buildYearBreakdown(allRows, extract, lowerIsBetter),
+    });
+
+    const data = channel === 'webinar'
+      ? {
+          leads: buildCategory((r) => r.webinarRegisteredCount, 'sum', false),
+          adsSpent: buildCategory((r) => r.webinarAdsSpentWithGST, 'sum', true),
+          cac: buildCategory((r) => r.webinarCAC, 'avg', true),
+          revenue: buildCategory((r) => r.netRevenue, 'sum', false),
+          convertedUsers: buildCategory((r) => r.webinarConvertedCount, 'sum', false),
+          cpl: buildCategory((r) => r.webinarCPL, 'avg', true),
+          netRoas: buildCategory((r) => r.webinarNetROAS, 'avg', false),
+        }
+      : {
+          leads: buildCategory((r) => r.leadFormRegisteredCount, 'sum', false),
+          adsSpent: buildCategory((r) => r.leadAdsSpentWithGST, 'sum', true),
+          cac: buildCategory((r) => r.leadFunnelCAC, 'avg', true),
+          revenue: buildCategory((r) => r.demoFunnelNetRevenue, 'sum', false),
+          convertedUsers: buildCategory((r) => r.demoConvertedCount, 'sum', false),
+          cpl: buildCategory((r) => r.demoFunnelCPL, 'avg', true),
+          netRoas: buildCategory((r) => r.demoFunnelNetROAS, 'avg', false),
+        };
+
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching GS Health channel metrics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch GS Health channel metrics',
       timestamp: new Date().toISOString(),
     } as APIResponse<null>);
   }

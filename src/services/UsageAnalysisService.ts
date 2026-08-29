@@ -22,6 +22,37 @@ function normalizeUserType(raw: string | null | undefined): string {
   return t === 'Webminar' ? 'Webinar' : t;
 }
 
+// Intent = "did they take an action that says they want to talk to a human", scored only from
+// demo call / assessment activity — deliberately excludes product usage entirely so it stays a
+// distinct signal from Usage Score, per how the sales team wants to read these two apart.
+// Assessment is scored the same way as demo call — presence, not status: neither has attended/
+// completed tracking treated as a scoring gate, both are just "did they book/start this at all".
+// demoCall has no attended/no-show tracking in the data at all (checked directly — 0 of 91 rows
+// have any status field). Overall Score caps Usage Score's contribution at 50 so one very active
+// power-user can't out-rank someone who engaged with the assessment (the stronger, more effortful
+// intent signal) purely on click-volume.
+const INTENT_DEMO_BOOKED_POINTS = 30;
+const INTENT_ASSESSMENT_POINTS = 50;
+const OVERALL_USAGE_SCORE_CAP = 50;
+
+function computeIntentScore(demoCallCount: number, assessmentCount: number): number {
+  const demoPoints = demoCallCount > 0 ? INTENT_DEMO_BOOKED_POINTS : 0;
+  const assessmentPoints = assessmentCount > 0 ? INTENT_ASSESSMENT_POINTS : 0;
+  return demoPoints + assessmentPoints;
+}
+
+// Sales-facing lead status, one value per user — kept separate from the scoring collections
+// entirely (own doc per user in usage_analysis_status), since it's a manual CRM-style annotation,
+// not something derived from product data.
+export const LEAD_STATUS_OPTIONS = ['DP', 'Not Qualified', 'Not Interested', 'Pitched', 'Booked', 'Paid'] as const;
+export type LeadStatus = (typeof LEAD_STATUS_OPTIONS)[number];
+
+export interface NoteEntry {
+  text: string;
+  byName: string;
+  createdAt: string;
+}
+
 export interface MainTabRow {
   id: string;
   name: string;
@@ -34,7 +65,17 @@ export interface MainTabRow {
   demoCallCount: number;
   assessmentCount: number;
   btCount: number;
+  liveScoringCount: number;
+  etfLiveScoringCount: number;
+  etfBacktestCount: number;
+  intradayCount: number;
+  portfoliosCreatedCount: number;
+  brokerConnectedCount: number;
   usageScore: number;
+  intentScore: number;
+  overallScore: number;
+  status: string | null;
+  latestNote: NoteEntry | null;
 }
 
 export interface BookingRow {
@@ -49,6 +90,45 @@ export interface BookingRow {
   registered: boolean;
   matchedType: string | null;
   matchedReferalCode: string | null;
+  leadFrom: string | null;
+}
+
+export interface UserDetail {
+  id: string;
+  name: string;
+  mobile: string;
+  email: string;
+  type: string;
+  referalCode: string | null;
+  signedUpAt: string | null;
+  lastLoginAt: string | null;
+  portfolioDeployedAt: string | null;
+  usageScore: number;
+  intentScore: number;
+  overallScore: number;
+  featureBreakdown: {
+    liveScoring: number;
+    backtest: number;
+    etfLiveScoring: number;
+    etfBacktest: number;
+    intraday: number;
+    portfoliosCreated: number;
+    brokerConnected: number;
+  };
+  demoCalls: { preferredDate: string | null; preferredTime: string | null; createdAt: string | null; leadFrom: string | null }[];
+  assessments: {
+    status: string | null;
+    registrationStatus: string | null;
+    completedAt: string | null;
+    leadFrom: string | null;
+    district: string | null;
+    state: string | null;
+    occupation: string | null;
+    investmentExperience: string | null;
+    portfolioSize: string | null;
+    challenges: string[];
+    otherChallenge: string | null;
+  }[];
 }
 
 export interface MainTabFilters {
@@ -103,12 +183,13 @@ export class UsageAnalysisService {
 
     const userIds = users.map((u: any) => u._id.toString());
 
-    const [lastLoginMap, demoByPhone, assessByPhone, assessByEmail, featureMaps] = await Promise.all([
+    const [lastLoginMap, demoByPhone, assessByPhone, assessByEmail, featureMaps, statusMap] = await Promise.all([
       this.getLastLoginMap(userIds),
       this.getDemoCallPhoneMap(),
       this.getAssessmentPhoneMap(),
       this.getAssessmentEmailMap(),
       this.getFeatureCountMaps(userIds),
+      this.getStatusMap(userIds),
     ]);
 
     return users.map((u: any) => {
@@ -117,11 +198,16 @@ export class UsageAnalysisService {
       const email = normalizeEmail(u.email);
 
       const assessedIds = new Set<string>([...(assessByPhone.get(phone) || []), ...(assessByEmail.get(email) || [])]);
+      const assessmentCount = assessedIds.size;
 
       let usageScore = 0;
       for (const cfg of ACTIVE_ACTION_COLLECTIONS) {
         usageScore += featureMaps.get(cfg.name)?.get(id) || 0;
       }
+
+      const demoCallCount = (demoByPhone.get(phone) || []).length;
+      const intentScore = computeIntentScore(demoCallCount, assessmentCount);
+      const overallScore = intentScore + Math.min(usageScore, OVERALL_USAGE_SCORE_CAP);
 
       return {
         id,
@@ -132,10 +218,20 @@ export class UsageAnalysisService {
         referalCode: u.referalCode || null,
         signedUpAt: u.createdOn ? new Date(u.createdOn).toISOString() : null,
         lastLoginAt: lastLoginMap.get(id) || null,
-        demoCallCount: (demoByPhone.get(phone) || []).length,
-        assessmentCount: assessedIds.size,
+        demoCallCount,
+        assessmentCount,
         btCount: featureMaps.get('backtest_Result')?.get(id) || 0,
+        liveScoringCount: featureMaps.get('liveScoring_User_Tracking')?.get(id) || 0,
+        etfLiveScoringCount: featureMaps.get('etf_liveScoring_User_Tracking')?.get(id) || 0,
+        etfBacktestCount: featureMaps.get('ETF_Backtest_Result')?.get(id) || 0,
+        intradayCount: featureMaps.get('intraday_User_Tracking')?.get(id) || 0,
+        portfoliosCreatedCount: featureMaps.get('portfolio_details')?.get(id) || 0,
+        brokerConnectedCount: featureMaps.get('borkrage_details')?.get(id) || 0,
         usageScore,
+        intentScore,
+        overallScore,
+        status: statusMap.get(id)?.status ?? null,
+        latestNote: statusMap.get(id)?.latestNote ?? null,
       };
     });
   }
@@ -178,6 +274,7 @@ export class UsageAnalysisService {
       registered: !!matchedUser,
       matchedType: matchedUser ? normalizeUserType(matchedUser.type) : null,
       matchedReferalCode: matchedUser ? matchedUser.referalCode || null : null,
+      leadFrom: r.leadFrom || null,
     };
   }
 
@@ -282,5 +379,136 @@ export class UsageAnalysisService {
     );
 
     return result;
+  }
+
+  // ============ Sales lead status + remarks (usage_analysis_status, one doc per userId) ============
+  private static readonly STATUS_COLLECTION = 'usage_analysis_status';
+
+  private async getStatusMap(userIds: string[]): Promise<Map<string, { status: string | null; latestNote: NoteEntry | null }>> {
+    const db = getDatabase();
+    const docs = await db
+      .collection(UsageAnalysisService.STATUS_COLLECTION)
+      .find({ _id: { $in: userIds } } as any)
+      .toArray();
+
+    const map = new Map<string, { status: string | null; latestNote: NoteEntry | null }>();
+    for (const d of docs as any[]) {
+      const notes: NoteEntry[] = Array.isArray(d.notes) ? d.notes : [];
+      const latestNote = notes.length > 0 ? notes[notes.length - 1] : null;
+      map.set(d._id, { status: d.status || null, latestNote });
+    }
+    return map;
+  }
+
+  async setUserStatus(userId: string, status: LeadStatus | null): Promise<void> {
+    const db = getDatabase();
+    await db
+      .collection(UsageAnalysisService.STATUS_COLLECTION)
+      .updateOne({ _id: userId } as any, { $set: { status, updatedAt: new Date() } }, { upsert: true });
+  }
+
+  async addUserNote(userId: string, text: string, byName: string): Promise<NoteEntry[]> {
+    const db = getDatabase();
+    const entry: NoteEntry = { text, byName, createdAt: new Date().toISOString() };
+    await db
+      .collection(UsageAnalysisService.STATUS_COLLECTION)
+      .updateOne({ _id: userId } as any, { $push: { notes: entry } as any, $set: { updatedAt: new Date() } }, { upsert: true });
+    return this.getUserNotes(userId);
+  }
+
+  async getUserNotes(userId: string): Promise<NoteEntry[]> {
+    const db = getDatabase();
+    const doc = await db.collection(UsageAnalysisService.STATUS_COLLECTION).findOne({ _id: userId } as any);
+    const notes: NoteEntry[] = doc && Array.isArray((doc as any).notes) ? (doc as any).notes : [];
+    return [...notes].reverse();
+  }
+
+  // ============ Main tab row click: one user's full journey ============
+  async getUserDetail(userId: string): Promise<UserDetail | null> {
+    const db = getDatabase();
+    if (!ObjectId.isValid(userId)) return null;
+
+    const user = await db.collection('userdetail').findOne({ _id: new ObjectId(userId) } as any);
+    if (!user) return null;
+
+    const phone = normalizePhone((user as any).mobile || (user as any).whatsappNumber);
+    const email = normalizeEmail((user as any).email);
+
+    const [lastLoginMap, featureMaps, demoDocs, assessDocs, liveDeployedDocs] = await Promise.all([
+      this.getLastLoginMap([userId]),
+      this.getFeatureCountMaps([userId]),
+      db.collection('democall').find({}).toArray(),
+      db.collection('assessments').find({}).toArray(),
+      // Same "real, live, invested" definition as the Live P&L tab (PortfolioRepository.
+      // getLiveRealPortfoliosWithHoldings) — kept in sync deliberately so "deployed date" here
+      // means the same thing as "shows up in Live P&L" there.
+      db
+        .collection('portfolio_details')
+        .find({ userId, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] }, stockDetails: { $exists: true, $ne: [], $type: 'array' } })
+        .project({ createdAt: 1 })
+        .toArray(),
+    ]);
+
+    const demoCalls = (demoDocs as any[])
+      .filter((d) => normalizePhone(d.whatsappNumber) === phone)
+      .map((d) => ({
+        preferredDate: d.preferredDate ? new Date(d.preferredDate).toISOString() : null,
+        preferredTime: d.preferredTime || null,
+        createdAt: d.createdAt ? new Date(d.createdAt).toISOString() : null,
+        leadFrom: d.leadFrom || null,
+      }));
+
+    const matchedAssessDocs = (assessDocs as any[]).filter(
+      (a) => normalizePhone(a.whatsappNumber) === phone || (email && normalizeEmail(a.email) === email)
+    );
+    const assessments = matchedAssessDocs.map((a) => ({
+      status: a.status || null,
+      registrationStatus: a.registrationStatus || null,
+      completedAt: a.completedAt ? new Date(a.completedAt).toISOString() : null,
+      leadFrom: a.leadFrom || null,
+      district: a.district || null,
+      state: a.state || null,
+      occupation: a.occupation || null,
+      investmentExperience: a.investmentExperience || null,
+      portfolioSize: a.portfolioSize || null,
+      challenges: Array.isArray(a.challenges) ? a.challenges : [],
+      otherChallenge: a.otherChallenge || null,
+    }));
+
+    let usageScore = 0;
+    for (const cfg of ACTIVE_ACTION_COLLECTIONS) {
+      usageScore += featureMaps.get(cfg.name)?.get(userId) || 0;
+    }
+    const intentScore = computeIntentScore(demoCalls.length, assessments.length);
+    const overallScore = intentScore + Math.min(usageScore, OVERALL_USAGE_SCORE_CAP);
+
+    const deployedDates = (liveDeployedDocs as any[]).map((p) => new Date(p.createdAt).getTime()).filter((t) => !isNaN(t));
+    const portfolioDeployedAt = deployedDates.length > 0 ? new Date(Math.min(...deployedDates)).toISOString() : null;
+
+    return {
+      id: userId,
+      name: (user as any).name || '',
+      mobile: (user as any).mobile || (user as any).whatsappNumber || '',
+      email: (user as any).email || '',
+      type: normalizeUserType((user as any).type),
+      referalCode: (user as any).referalCode || null,
+      signedUpAt: (user as any).createdOn ? new Date((user as any).createdOn).toISOString() : null,
+      lastLoginAt: lastLoginMap.get(userId) || null,
+      portfolioDeployedAt,
+      usageScore,
+      intentScore,
+      overallScore,
+      featureBreakdown: {
+        liveScoring: featureMaps.get('liveScoring_User_Tracking')?.get(userId) || 0,
+        backtest: featureMaps.get('backtest_Result')?.get(userId) || 0,
+        etfLiveScoring: featureMaps.get('etf_liveScoring_User_Tracking')?.get(userId) || 0,
+        etfBacktest: featureMaps.get('ETF_Backtest_Result')?.get(userId) || 0,
+        intraday: featureMaps.get('intraday_User_Tracking')?.get(userId) || 0,
+        portfoliosCreated: featureMaps.get('portfolio_details')?.get(userId) || 0,
+        brokerConnected: featureMaps.get('borkrage_details')?.get(userId) || 0,
+      },
+      demoCalls,
+      assessments,
+    };
   }
 }

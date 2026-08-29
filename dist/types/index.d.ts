@@ -53,6 +53,11 @@ export interface StockHolding {
     order_type?: string;
     product?: string;
 }
+export interface RebalanceHistoryEntry {
+    date: Date;
+    sipApplied?: boolean;
+    sipAmount?: number;
+}
 export interface Portfolio {
     userId: string;
     createdAt: Date;
@@ -61,8 +66,11 @@ export interface Portfolio {
     isInvested: boolean;
     fromBacktest?: boolean;
     investmentCapital?: number;
+    freeCash?: number;
+    lockedFreeCash?: number;
     portfolioName?: string;
     stockDetails?: StockHolding[];
+    rebalanceHistory?: RebalanceHistoryEntry[];
 }
 export interface StockListItem {
     tradingsymbol: string;
