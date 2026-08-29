@@ -10,7 +10,9 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const DashboardUserRepository_1 = require("../repository/DashboardUserRepository");
 const RolePermissionRepository_1 = require("../repository/RolePermissionRepository");
 const permissions_1 = require("../config/permissions");
+const database_1 = require("../config/database");
 const JWT_EXPIRY = '12h';
+const LOGIN_LOG_COLLECTION = 'dashboard_login_logs';
 function toSafeUser(user) {
     return {
         id: String(user._id),
@@ -59,7 +61,7 @@ class AuthService {
             }
         }
     }
-    async login(email, password) {
+    async login(email, password, meta = {}) {
         const user = await this.userRepo.getByEmail(email.toLowerCase().trim());
         if (!user || !user.active)
             return null;
@@ -67,9 +69,30 @@ class AuthService {
         if (!valid)
             return null;
         await this.userRepo.touchLastLogin(String(user._id));
+        await this.logEvent(user, 'login', meta);
         const token = jsonwebtoken_1.default.sign({ sub: String(user._id), email: user.email, role: user.role }, this.jwtSecret, { expiresIn: JWT_EXPIRY });
         const permissions = await this.getEffectivePermissions(user);
         return { token, user: toSafeUser(user), permissions };
+    }
+    // Staff login/logout audit trail — Owner-only visibility, surfaced in Admin Management.
+    // Logout is purely a client "Sign Out" click (JWTs are stateless, there's no server session to
+    // end), so this only ever captures deliberate sign-outs, not tab closes or token expiry — the
+    // same practical scope every stateless-JWT app settles for.
+    async logEvent(user, event, meta = {}) {
+        const db = (0, database_1.getDatabase)();
+        await db.collection(LOGIN_LOG_COLLECTION).insertOne({
+            userId: String(user._id),
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            event,
+            timestamp: new Date(),
+            ip: meta.ip || null,
+            userAgent: meta.userAgent || null,
+        });
+    }
+    async logout(user, meta = {}) {
+        await this.logEvent(user, 'logout', meta);
     }
     verifyToken(token) {
         try {

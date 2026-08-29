@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UsageAnalysisService = void 0;
+exports.UsageAnalysisService = exports.LEAD_STATUS_OPTIONS = void 0;
 const mongodb_1 = require("mongodb");
 const database_1 = require("../config/database");
 const OverviewV2Service_1 = require("./OverviewV2Service");
@@ -20,6 +20,27 @@ function normalizeUserType(raw) {
     const t = (raw || '').trim();
     return t === 'Webminar' ? 'Webinar' : t;
 }
+// Intent = "did they take an action that says they want to talk to a human", scored only from
+// demo call / assessment activity — deliberately excludes product usage entirely so it stays a
+// distinct signal from Usage Score, per how the sales team wants to read these two apart.
+// Assessment is scored the same way as demo call — presence, not status: neither has attended/
+// completed tracking treated as a scoring gate, both are just "did they book/start this at all".
+// demoCall has no attended/no-show tracking in the data at all (checked directly — 0 of 91 rows
+// have any status field). Overall Score caps Usage Score's contribution at 50 so one very active
+// power-user can't out-rank someone who engaged with the assessment (the stronger, more effortful
+// intent signal) purely on click-volume.
+const INTENT_DEMO_BOOKED_POINTS = 30;
+const INTENT_ASSESSMENT_POINTS = 50;
+const OVERALL_USAGE_SCORE_CAP = 50;
+function computeIntentScore(demoCallCount, assessmentCount) {
+    const demoPoints = demoCallCount > 0 ? INTENT_DEMO_BOOKED_POINTS : 0;
+    const assessmentPoints = assessmentCount > 0 ? INTENT_ASSESSMENT_POINTS : 0;
+    return demoPoints + assessmentPoints;
+}
+// Sales-facing lead status, one value per user — kept separate from the scoring collections
+// entirely (own doc per user in usage_analysis_status), since it's a manual CRM-style annotation,
+// not something derived from product data.
+exports.LEAD_STATUS_OPTIONS = ['DP', 'Not Qualified', 'Not Interested', 'Pitched', 'Booked', 'Paid'];
 class UsageAnalysisService {
     // ============ Main tab: signed-up users (in the filtered window) + their usage/booking footprint ============
     // Usage/booking counts are always lifetime totals, never scoped to the signup-date filter — a user
@@ -62,22 +83,27 @@ class UsageAnalysisService {
             .project({ _id: 1, name: 1, email: 1, mobile: 1, whatsappNumber: 1, type: 1, createdOn: 1, referalCode: 1 })
             .toArray();
         const userIds = users.map((u) => u._id.toString());
-        const [lastLoginMap, demoByPhone, assessByPhone, assessByEmail, featureMaps] = await Promise.all([
+        const [lastLoginMap, demoByPhone, assessByPhone, assessByEmail, featureMaps, statusMap] = await Promise.all([
             this.getLastLoginMap(userIds),
             this.getDemoCallPhoneMap(),
             this.getAssessmentPhoneMap(),
             this.getAssessmentEmailMap(),
             this.getFeatureCountMaps(userIds),
+            this.getStatusMap(userIds),
         ]);
         return users.map((u) => {
             const id = u._id.toString();
             const phone = normalizePhone(u.mobile || u.whatsappNumber);
             const email = normalizeEmail(u.email);
             const assessedIds = new Set([...(assessByPhone.get(phone) || []), ...(assessByEmail.get(email) || [])]);
+            const assessmentCount = assessedIds.size;
             let usageScore = 0;
             for (const cfg of OverviewV2Service_1.ACTIVE_ACTION_COLLECTIONS) {
                 usageScore += featureMaps.get(cfg.name)?.get(id) || 0;
             }
+            const demoCallCount = (demoByPhone.get(phone) || []).length;
+            const intentScore = computeIntentScore(demoCallCount, assessmentCount);
+            const overallScore = intentScore + Math.min(usageScore, OVERALL_USAGE_SCORE_CAP);
             return {
                 id,
                 name: u.name || '',
@@ -87,10 +113,20 @@ class UsageAnalysisService {
                 referalCode: u.referalCode || null,
                 signedUpAt: u.createdOn ? new Date(u.createdOn).toISOString() : null,
                 lastLoginAt: lastLoginMap.get(id) || null,
-                demoCallCount: (demoByPhone.get(phone) || []).length,
-                assessmentCount: assessedIds.size,
+                demoCallCount,
+                assessmentCount,
                 btCount: featureMaps.get('backtest_Result')?.get(id) || 0,
+                liveScoringCount: featureMaps.get('liveScoring_User_Tracking')?.get(id) || 0,
+                etfLiveScoringCount: featureMaps.get('etf_liveScoring_User_Tracking')?.get(id) || 0,
+                etfBacktestCount: featureMaps.get('ETF_Backtest_Result')?.get(id) || 0,
+                intradayCount: featureMaps.get('intraday_User_Tracking')?.get(id) || 0,
+                portfoliosCreatedCount: featureMaps.get('portfolio_details')?.get(id) || 0,
+                brokerConnectedCount: featureMaps.get('borkrage_details')?.get(id) || 0,
                 usageScore,
+                intentScore,
+                overallScore,
+                status: statusMap.get(id)?.status ?? null,
+                latestNote: statusMap.get(id)?.latestNote ?? null,
             };
         });
     }
@@ -123,6 +159,7 @@ class UsageAnalysisService {
             registered: !!matchedUser,
             matchedType: matchedUser ? normalizeUserType(matchedUser.type) : null,
             matchedReferalCode: matchedUser ? matchedUser.referalCode || null : null,
+            leadFrom: r.leadFrom || null,
         };
     }
     // ============ Shared lookup builders ============
@@ -223,6 +260,122 @@ class UsageAnalysisService {
         }));
         return result;
     }
+    async getStatusMap(userIds) {
+        const db = (0, database_1.getDatabase)();
+        const docs = await db
+            .collection(UsageAnalysisService.STATUS_COLLECTION)
+            .find({ _id: { $in: userIds } })
+            .toArray();
+        const map = new Map();
+        for (const d of docs) {
+            const notes = Array.isArray(d.notes) ? d.notes : [];
+            const latestNote = notes.length > 0 ? notes[notes.length - 1] : null;
+            map.set(d._id, { status: d.status || null, latestNote });
+        }
+        return map;
+    }
+    async setUserStatus(userId, status) {
+        const db = (0, database_1.getDatabase)();
+        await db
+            .collection(UsageAnalysisService.STATUS_COLLECTION)
+            .updateOne({ _id: userId }, { $set: { status, updatedAt: new Date() } }, { upsert: true });
+    }
+    async addUserNote(userId, text, byName) {
+        const db = (0, database_1.getDatabase)();
+        const entry = { text, byName, createdAt: new Date().toISOString() };
+        await db
+            .collection(UsageAnalysisService.STATUS_COLLECTION)
+            .updateOne({ _id: userId }, { $push: { notes: entry }, $set: { updatedAt: new Date() } }, { upsert: true });
+        return this.getUserNotes(userId);
+    }
+    async getUserNotes(userId) {
+        const db = (0, database_1.getDatabase)();
+        const doc = await db.collection(UsageAnalysisService.STATUS_COLLECTION).findOne({ _id: userId });
+        const notes = doc && Array.isArray(doc.notes) ? doc.notes : [];
+        return [...notes].reverse();
+    }
+    // ============ Main tab row click: one user's full journey ============
+    async getUserDetail(userId) {
+        const db = (0, database_1.getDatabase)();
+        if (!mongodb_1.ObjectId.isValid(userId))
+            return null;
+        const user = await db.collection('userdetail').findOne({ _id: new mongodb_1.ObjectId(userId) });
+        if (!user)
+            return null;
+        const phone = normalizePhone(user.mobile || user.whatsappNumber);
+        const email = normalizeEmail(user.email);
+        const [lastLoginMap, featureMaps, demoDocs, assessDocs, liveDeployedDocs] = await Promise.all([
+            this.getLastLoginMap([userId]),
+            this.getFeatureCountMaps([userId]),
+            db.collection('democall').find({}).toArray(),
+            db.collection('assessments').find({}).toArray(),
+            // Same "real, live, invested" definition as the Live P&L tab (PortfolioRepository.
+            // getLiveRealPortfoliosWithHoldings) — kept in sync deliberately so "deployed date" here
+            // means the same thing as "shows up in Live P&L" there.
+            db
+                .collection('portfolio_details')
+                .find({ userId, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] }, stockDetails: { $exists: true, $ne: [], $type: 'array' } })
+                .project({ createdAt: 1 })
+                .toArray(),
+        ]);
+        const demoCalls = demoDocs
+            .filter((d) => normalizePhone(d.whatsappNumber) === phone)
+            .map((d) => ({
+            preferredDate: d.preferredDate ? new Date(d.preferredDate).toISOString() : null,
+            preferredTime: d.preferredTime || null,
+            createdAt: d.createdAt ? new Date(d.createdAt).toISOString() : null,
+            leadFrom: d.leadFrom || null,
+        }));
+        const matchedAssessDocs = assessDocs.filter((a) => normalizePhone(a.whatsappNumber) === phone || (email && normalizeEmail(a.email) === email));
+        const assessments = matchedAssessDocs.map((a) => ({
+            status: a.status || null,
+            registrationStatus: a.registrationStatus || null,
+            completedAt: a.completedAt ? new Date(a.completedAt).toISOString() : null,
+            leadFrom: a.leadFrom || null,
+            district: a.district || null,
+            state: a.state || null,
+            occupation: a.occupation || null,
+            investmentExperience: a.investmentExperience || null,
+            portfolioSize: a.portfolioSize || null,
+            challenges: Array.isArray(a.challenges) ? a.challenges : [],
+            otherChallenge: a.otherChallenge || null,
+        }));
+        let usageScore = 0;
+        for (const cfg of OverviewV2Service_1.ACTIVE_ACTION_COLLECTIONS) {
+            usageScore += featureMaps.get(cfg.name)?.get(userId) || 0;
+        }
+        const intentScore = computeIntentScore(demoCalls.length, assessments.length);
+        const overallScore = intentScore + Math.min(usageScore, OVERALL_USAGE_SCORE_CAP);
+        const deployedDates = liveDeployedDocs.map((p) => new Date(p.createdAt).getTime()).filter((t) => !isNaN(t));
+        const portfolioDeployedAt = deployedDates.length > 0 ? new Date(Math.min(...deployedDates)).toISOString() : null;
+        return {
+            id: userId,
+            name: user.name || '',
+            mobile: user.mobile || user.whatsappNumber || '',
+            email: user.email || '',
+            type: normalizeUserType(user.type),
+            referalCode: user.referalCode || null,
+            signedUpAt: user.createdOn ? new Date(user.createdOn).toISOString() : null,
+            lastLoginAt: lastLoginMap.get(userId) || null,
+            portfolioDeployedAt,
+            usageScore,
+            intentScore,
+            overallScore,
+            featureBreakdown: {
+                liveScoring: featureMaps.get('liveScoring_User_Tracking')?.get(userId) || 0,
+                backtest: featureMaps.get('backtest_Result')?.get(userId) || 0,
+                etfLiveScoring: featureMaps.get('etf_liveScoring_User_Tracking')?.get(userId) || 0,
+                etfBacktest: featureMaps.get('ETF_Backtest_Result')?.get(userId) || 0,
+                intraday: featureMaps.get('intraday_User_Tracking')?.get(userId) || 0,
+                portfoliosCreated: featureMaps.get('portfolio_details')?.get(userId) || 0,
+                brokerConnected: featureMaps.get('borkrage_details')?.get(userId) || 0,
+            },
+            demoCalls,
+            assessments,
+        };
+    }
 }
 exports.UsageAnalysisService = UsageAnalysisService;
+// ============ Sales lead status + remarks (usage_analysis_status, one doc per userId) ============
+UsageAnalysisService.STATUS_COLLECTION = 'usage_analysis_status';
 //# sourceMappingURL=UsageAnalysisService.js.map

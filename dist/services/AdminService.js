@@ -9,6 +9,7 @@ const DashboardUserRepository_1 = require("../repository/DashboardUserRepository
 const RolePermissionRepository_1 = require("../repository/RolePermissionRepository");
 const permissions_1 = require("../config/permissions");
 const AuthService_1 = require("./AuthService");
+const database_1 = require("../config/database");
 class AdminService {
     constructor() {
         this.userRepo = new DashboardUserRepository_1.DashboardUserRepository();
@@ -123,6 +124,27 @@ class AdminService {
                 throw new Error(`Unknown permission key: ${key}`);
         }
         await this.roleRepo.setPermissions(role, permissions);
+    }
+    // Most-recent-first, capped — this is a staff audit trail (a handful of accounts logging in a
+    // few times a day), not a high-volume table, so one bounded fetch is plenty without pagination.
+    async getLoginHistory(limit = 2000) {
+        const db = (0, database_1.getDatabase)();
+        const docs = await db
+            .collection('dashboard_login_logs')
+            .find({})
+            .sort({ timestamp: -1 })
+            .limit(limit)
+            .toArray();
+        return docs.map((d) => ({
+            userId: d.userId,
+            name: d.name || '',
+            email: d.email || '',
+            role: d.role || '',
+            event: d.event,
+            timestamp: new Date(d.timestamp).toISOString(),
+            ip: d.ip || null,
+            userAgent: d.userAgent || null,
+        }));
     }
 }
 exports.AdminService = AdminService;

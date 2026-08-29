@@ -9,6 +9,16 @@ export interface DashboardUserView extends SafeUser {
     createdAt: Date;
     lastLoginAt?: Date;
 }
+export interface LoginLogEntry {
+    userId: string;
+    name: string;
+    email: string;
+    role: string;
+    event: 'login' | 'logout';
+    timestamp: string;
+    ip: string | null;
+    userAgent: string | null;
+}
 export declare class AdminService {
     private userRepo;
     private roleRepo;
@@ -39,5 +49,6 @@ export declare class AdminService {
     };
     listRolePermissions(): Promise<Record<Role, string[]>>;
     setRolePermissions(role: Role, permissions: string[]): Promise<void>;
+    getLoginHistory(limit?: number): Promise<LoginLogEntry[]>;
 }
 //# sourceMappingURL=AdminService.d.ts.map

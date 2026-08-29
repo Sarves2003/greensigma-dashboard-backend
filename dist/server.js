@@ -30,7 +30,7 @@ app.use(express_1.default.json());
 app.use(express_1.default.urlencoded({ extended: true }));
 app.use((0, cors_1.default)({
     origin: [
-        'https://greensigma-dashboard-frontend.onrender.com',
+        'https://greensigma-dashboard-frontend-322775398411.us-central1.run.app',
         'http://localhost:4200',
     ],
     credentials: true,

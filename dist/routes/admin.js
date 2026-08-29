@@ -95,5 +95,15 @@ router.put('/role-permissions/:role', async (req, res) => {
         res.status(400).json({ success: false, error: error.message || 'Failed to update role permissions', timestamp: new Date().toISOString() });
     }
 });
+router.get('/login-history', async (req, res) => {
+    try {
+        const data = await adminService.getLoginHistory();
+        res.json({ success: true, data, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error fetching login history:', error);
+        res.status(500).json({ success: false, error: 'Failed to load login history', timestamp: new Date().toISOString() });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=admin.js.map
