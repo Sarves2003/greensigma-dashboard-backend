@@ -1,21 +1,22 @@
+FROM node:18-alpine AS build
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
 FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
 RUN npm ci --only=production
 
-# Copy source
-COPY . .
+COPY --from=build /app/dist ./dist
 
-# Build TypeScript
-RUN npm run build
-
-# Expose port
 EXPOSE 5000
 
-# Start server
 CMD ["node", "dist/server.js"]
