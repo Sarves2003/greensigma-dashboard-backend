@@ -340,6 +340,44 @@ export class OverviewV2Service {
     return { rows };
   }
 
+  // ============ PLOT 3b: Avg days from signup to first real portfolio, per signup month
+  // (ignores ALL global filters). Cohort = Tribe signups that month, same scope as Activation
+  // Rate above. Unbounded lookahead for the portfolio side (no day-window cap), and users who
+  // haven't deployed yet by the time this runs are simply excluded from that month's average —
+  // so a very recent month's number is provisional and will likely rise as stragglers convert. ============
+  async getAvgDaysToPortfolioTrend(monthKeys: string[]): Promise<any> {
+    const db = getDatabase();
+    const rows: any[] = [];
+
+    for (const key of monthKeys) {
+      const cStart = monthStart(key);
+      const cEnd = addMonths(cStart, 1);
+
+      const signups = await db.collection('userdetail').find({
+        type: { $in: TRIBE_TYPES },
+        createdOn: { $gte: cStart, $lt: cEnd },
+      }).project({ _id: 1, createdOn: 1 }).toArray();
+
+      if (signups.length === 0) {
+        rows.push({ monthLabel: monthLabel(key), cohortSize: 0, deployedCount: 0, avgDays: null });
+        continue;
+      }
+
+      const signupIdsStr = signups.map((u: any) => u._id.toString());
+      const avgDays = await this.getAvgDaysToFirstPortfolio(signupIdsStr, signups);
+      const deployedUsers = await db.collection('portfolio_details').distinct('userId', {
+        userId: { $in: signupIdsStr },
+        isInvested: true,
+        borkrageType: { $in: ['kite', 'zebu'] },
+      });
+      const deployedCount = deployedUsers.length;
+
+      rows.push({ monthLabel: monthLabel(key), cohortSize: signups.length, deployedCount, avgDays });
+    }
+
+    return { rows };
+  }
+
   // ============ PLOT 4: Live-capital deployment rate, real only, unbounded, Tribe only (ignores ALL global filters) ============
   async getLiveCapitalRate(monthKeys: string[]): Promise<any> {
     const db = getDatabase();

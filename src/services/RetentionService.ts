@@ -12,6 +12,11 @@ import { getDatabase } from '../config/database';
 
 const LOGIN_DATA_CUTOFF = new Date('2026-05-23');
 
+// userdetail.type splits the paid tier into 'Tribe' (monthly) and 'TribeYearly' (annual) — both
+// must count together as "Tribe" or the cohort collapses toward zero (TribeYearly has been the
+// large majority of paid signups since 2024).
+const TRIBE_TYPES = ['Tribe', 'TribeYearly'];
+
 export class RetentionService {
   private userRepo = new UserRepository();
   private loginRepo = new LoginLogRepository();
@@ -38,7 +43,7 @@ export class RetentionService {
       }
     };
     if (filters.userType) {
-      userFilter.type = filters.userType;
+      userFilter.type = filters.userType === 'Tribe' ? { $in: TRIBE_TYPES } : filters.userType;
     }
 
     // Get users registered in the date range
@@ -348,7 +353,7 @@ export class RetentionService {
       }
     };
     if (filters.userType) {
-      userFilter.type = filters.userType;
+      userFilter.type = filters.userType === 'Tribe' ? { $in: TRIBE_TYPES } : filters.userType;
     }
 
     // Get users registered in this period only
