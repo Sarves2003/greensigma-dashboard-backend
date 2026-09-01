@@ -5,6 +5,14 @@ import { FilterOptions } from '../types';
 const LOGIN_DATA_CUTOFF = new Date('2026-05-23');
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+// userdetail.type has two distinct values for the same paid tier — 'Tribe' (monthly) and
+// 'TribeYearly' (annual) — but 'TribeYearly' has been the overwhelming majority of real Tribe
+// signups since at least 2024 (checked directly: e.g. Aug 2026 had 135 TribeYearly vs 1 plain
+// Tribe). Every "Tribe cohort" query below must match both or its denominator collapses to
+// near-zero, which is exactly what was making Activation Rate / New Premium Users / Monthly
+// Active Paid look nonsensical.
+const TRIBE_TYPES = ['Tribe', 'TribeYearly'];
+
 const LEDGER_SOURCES = ['login', 'stockScore', 'stockBacktest', 'etfScore', 'etfBacktest', 'intraday', 'portfolio', 'broker'] as const;
 type LedgerSource = typeof LEDGER_SOURCES[number];
 
@@ -42,7 +50,7 @@ export class OverviewV2Service {
   // Build a userdetail filter from global filters (userType/state/district/referralCode) - no date
   private buildUserFilter(filters: FilterOptions): any {
     const f: any = {};
-    if (filters.userType) f.type = filters.userType;
+    if (filters.userType) f.type = filters.userType === 'Tribe' ? { $in: TRIBE_TYPES } : filters.userType;
     if (filters.state) f.state = filters.state;
     if (filters.district) f.district = filters.district;
     if (filters.referralCode) f.referalCode = filters.referralCode;
@@ -61,7 +69,7 @@ export class OverviewV2Service {
     }).project({ _id: 1, createdOn: 1, type: 1 }).toArray();
 
     const newSignups = signups.length;
-    const newPaidCustomers = signups.filter((u: any) => u.type === 'Tribe').length;
+    const newPaidCustomers = signups.filter((u: any) => TRIBE_TYPES.includes(u.type)).length;
 
     const daysInPeriod = Math.max(1, (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
 
@@ -291,7 +299,7 @@ export class OverviewV2Service {
       const cEnd = addMonths(cStart, 1);
 
       const users = await db.collection('userdetail').find({
-        type: 'Tribe',
+        type: { $in: TRIBE_TYPES },
         createdOn: { $gte: cStart, $lt: cEnd },
       }).project({ _id: 1, createdOn: 1 }).toArray();
 
@@ -343,7 +351,7 @@ export class OverviewV2Service {
       const cEnd = addMonths(cStart, 1);
 
       const cohortUsers = await db.collection('userdetail').find({
-        type: 'Tribe',
+        type: { $in: TRIBE_TYPES },
         createdOn: { $gte: cStart, $lt: cEnd },
       }).project({ _id: 1 }).toArray();
 
@@ -378,7 +386,7 @@ export class OverviewV2Service {
 
   private async computeMonthlyActivePaid(ledgerItems: LedgerSource[]): Promise<any> {
     const db = getDatabase();
-    const tribeUsers = await db.collection('userdetail').find({ type: 'Tribe' }).project({ _id: 1 }).toArray();
+    const tribeUsers = await db.collection('userdetail').find({ type: { $in: TRIBE_TYPES } }).project({ _id: 1 }).toArray();
     const tribeIdsStr = tribeUsers.map((u: any) => u._id.toString());
     const tribeObjectIds = tribeUsers.map((u: any) => u._id);
 

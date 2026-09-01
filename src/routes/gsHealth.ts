@@ -57,6 +57,29 @@ interface MetricSlice {
   value: number | null;
 }
 
+// A brand-new month gets an empty placeholder row in the sheet the moment it starts (e.g. Sep 1st,
+// before any real activity is logged) — anchoring "current month" to that row makes every KPI look
+// like a 100% crash. Detected as "no leads AND no spend" since a real month always has at least one
+// of those by the time anyone looks at it.
+function isEmptyRow(r: GsHealthRow): boolean {
+  return r.registeredCount === 0 && r.adsSpent === 0;
+}
+
+// Resolves which rows to treat as "the data" for this request: an explicit ?asOfMonth=YYYY-MM
+// truncates to that month (so "select Jun-Aug, treat Aug as current" works); with no override,
+// trailing empty placeholder rows are dropped automatically so day-1-of-a-new-month never becomes
+// "current month" on its own.
+function effectiveRows(allRows: GsHealthRow[], asOfMonth?: string): GsHealthRow[] {
+  if (asOfMonth) {
+    const truncated = allRows.filter((r) => r.monthKey <= asOfMonth);
+    return truncated.length > 0 ? truncated : allRows;
+  }
+
+  let end = allRows.length;
+  while (end > 1 && isEmptyRow(allRows[end - 1])) end--;
+  return allRows.slice(0, end);
+}
+
 // Anchored to the LATEST row actually present in the sheet — not real calendar "today",
 // since the sheet is manually updated and may lag behind the current date.
 function buildMetricBreakdown(
@@ -135,12 +158,14 @@ function buildYearBreakdown(
 
 router.get('/key-metrics', async (req: Request, res: Response) => {
   try {
-    const allRows = await sheetsService.getMonthlyData();
+    const allRowsRaw = await sheetsService.getMonthlyData();
 
-    if (allRows.length === 0) {
+    if (allRowsRaw.length === 0) {
       res.json({ success: true, data: null, timestamp: new Date().toISOString() } as APIResponse<any>);
       return;
     }
+
+    const allRows = effectiveRows(allRowsRaw, req.query.asOfMonth as string | undefined);
 
     const buildCategory = (extract: (r: GsHealthRow) => number, quarterAgg: 'sum' | 'avg', lowerIsBetter: boolean) => ({
       ...buildMetricBreakdown(allRows, extract, quarterAgg),
@@ -178,11 +203,13 @@ router.get('/channel-metrics', async (req: Request, res: Response) => {
       return;
     }
 
-    const allRows = await sheetsService.getMonthlyData();
-    if (allRows.length === 0) {
+    const allRowsRaw = await sheetsService.getMonthlyData();
+    if (allRowsRaw.length === 0) {
       res.json({ success: true, data: null, timestamp: new Date().toISOString() } as APIResponse<any>);
       return;
     }
+
+    const allRows = effectiveRows(allRowsRaw, req.query.asOfMonth as string | undefined);
 
     const buildCategory = (extract: (r: GsHealthRow) => number, quarterAgg: 'sum' | 'avg', lowerIsBetter: boolean) => ({
       ...buildMetricBreakdown(allRows, extract, quarterAgg),

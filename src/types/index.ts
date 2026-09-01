@@ -6,7 +6,7 @@ export interface User {
   whatsappNumber?: string;
   state?: string;
   district?: string;
-  type: 'Webinar' | 'Free' | 'Tribe';
+  type: 'Webinar' | 'Free' | 'Tribe' | 'TribeYearly';
   referalCode?: string;
   referalType?: string;
   createdOn: Date;

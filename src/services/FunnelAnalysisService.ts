@@ -15,6 +15,11 @@ const SHEET_CACHE_TTL_MS = 10 * 60 * 1000;
 
 const GENERIC_REFERRAL_CODES = new Set(['SIGMA2026', 'SIGMA2025']);
 
+// userdetail.type splits the paid tier into 'Tribe' (monthly) and 'TribeYearly' (annual) — both
+// are real conversions and must count together, or "Tribe" totals collapse toward zero since
+// 'TribeYearly' has been the large majority of paid signups since 2024.
+const TRIBE_TYPES = new Set(['Tribe', 'TribeYearly']);
+
 const DEFAULT_BATCH_DATES = [
   '21Jun2025', '5July2025', '19July2025', '2Aug2025', '16Aug2025', '30Aug2025',
   '13Sep2025', '27Sep2025', '4Oct2025', '11Oct2025', '25Oct2025', '08Nov2025',
@@ -303,7 +308,7 @@ export class FunnelAnalysisService {
   async getSegment1(startDate: Date, endDate: Date): Promise<any> {
     const tagged = await this.getTaggedUsers();
     const periodTribe = tagged.filter(
-      (u) => u.type === 'Tribe' && u.createdOn >= startDate && u.createdOn < endDate
+      (u) => TRIBE_TYPES.has(u.type) && u.createdOn >= startDate && u.createdOn < endDate
     );
 
     const counts = new Map<string, number>();
@@ -332,7 +337,7 @@ export class FunnelAnalysisService {
 
     for (const u of tagged) {
       totals.set(u.tag, (totals.get(u.tag) || 0) + 1);
-      if (u.type === 'Tribe') {
+      if (TRIBE_TYPES.has(u.type)) {
         conversions.set(u.tag, (conversions.get(u.tag) || 0) + 1);
       }
     }
