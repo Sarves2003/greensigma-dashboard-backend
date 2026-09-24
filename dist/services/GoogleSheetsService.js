@@ -13,11 +13,22 @@ class GoogleSheetsService {
         this.cache = null;
         this.cacheTimestamp = 0;
     }
+    // Strips currency symbols, thousands separators, %, spaces — anything that isn't part of the
+    // number itself — before parsing. Blank/non-numeric cells are 0.
     toNumber(val) {
         if (!val)
             return 0;
-        const n = parseFloat(val.toString().replace(/,/g, '').trim());
+        const cleaned = val.toString().replace(/[^0-9.\-]/g, '');
+        const n = parseFloat(cleaned);
         return isNaN(n) ? 0 : n;
+    }
+    // First header that exists in the row wins — lets a renamed column keep working under its old name.
+    num(r, ...headers) {
+        for (const h of headers) {
+            if (r[h] !== undefined && r[h] !== '')
+                return this.toNumber(r[h]);
+        }
+        return 0;
     }
     async getMonthlyData() {
         const now = Date.now();
@@ -30,7 +41,7 @@ class GoogleSheetsService {
         }
         const response = await axios_1.default.get(csvUrl, { responseType: 'text', timeout: 15000 });
         const records = (0, sync_1.parse)(response.data, {
-            columns: true,
+            columns: (header) => header.map((h) => h.trim()),
             skip_empty_lines: true,
             relax_column_count: true,
         });
@@ -47,10 +58,19 @@ class GoogleSheetsService {
             const leadAdsSpentWithGST = this.toNumber(r['Demo Lead Ads Spent with GST']);
             const webinarConvertedCount = this.toNumber(r['Webinar Converter Counts']);
             const demoConvertedCount = this.toNumber(r['Demo Converted Counts']);
-            const totalRevenue = this.toNumber(r['Total Revenue']);
-            const netRevenue = this.toNumber(r['Net Revenue']);
+            const totalRevenue = this.num(r, 'Webinar Total Revenue', 'Total Revenue');
+            const netRevenue = this.num(r, 'Webinar Net Revenue', 'Net Revenue');
             const demoFunnelTotalRevenue = this.toNumber(r['Demo Funnel Total Revenue']);
             const demoFunnelNetRevenue = this.toNumber(r['Demo Funnel Net Revenue']);
+            const renewalTotalRevenue = this.toNumber(r['Renewal Total Revenue']);
+            const renewalNetRevenue = this.toNumber(r['Renewal Net Revenue']);
+            const marketingSpending = this.toNumber(r['Marketing Spending']); // blank -> 0
+            // Free-text remarks: the sheet's old "Notes" column now sits under a blank header, and a
+            // separate "Monthly Change" column carries similar short comments. Show whichever exist.
+            const notes = [r['Notes'], r['Monthly Change'], r['']]
+                .map((v) => (v || '').trim())
+                .filter(Boolean)
+                .join(' · ');
             return {
                 year,
                 month,
@@ -59,10 +79,16 @@ class GoogleSheetsService {
                 quarter: r['Quarter'] || '',
                 webinarRegisteredCount,
                 leadFormRegisteredCount,
+                expectedRenewalCount: this.toNumber(r['Expected Renewal Count']),
                 totalRevenue,
                 netRevenue,
                 demoFunnelTotalRevenue,
                 demoFunnelNetRevenue,
+                renewalTotalRevenue,
+                renewalNetRevenue,
+                renewalCount: this.toNumber(r['Renewal']),
+                marketingSpending,
+                paymentCompletion: this.toNumber(r['Payment Completion']),
                 eventSpent: this.toNumber(r['Event Spent']),
                 webinarAdsSpent: this.toNumber(r['Webinar Ads spent']),
                 webinarAdsSpentWithGST,
@@ -83,15 +109,15 @@ class GoogleSheetsService {
                 overallCAC: this.toNumber(r['Overall CAC']),
                 productCost: this.toNumber(r['Product Cost']),
                 cacRatio: this.toNumber(r['CAC Ratio']),
-                notes: (r['Notes'] || '').trim(),
+                notes,
                 registeredCount: webinarRegisteredCount + leadFormRegisteredCount,
                 paidUsers: webinarConvertedCount + demoConvertedCount,
                 adsSpent: webinarAdsSpentWithGST + leadAdsSpentWithGST,
                 cac: this.toNumber(r['Overall CAC']),
                 cpp: this.toNumber(r['Webinar CPL']),
                 netRoas: this.toNumber(r['Webinar Net ROAS']),
-                combinedTotalRevenue: totalRevenue + demoFunnelTotalRevenue,
-                combinedNetRevenue: netRevenue + demoFunnelNetRevenue,
+                combinedTotalRevenue: totalRevenue + demoFunnelTotalRevenue + renewalTotalRevenue,
+                combinedNetRevenue: netRevenue + demoFunnelNetRevenue + renewalNetRevenue,
             };
         })
             .sort((a, b) => a.monthKey.localeCompare(b.monthKey));

@@ -6,7 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ActivationTrackerService = void 0;
 const axios_1 = __importDefault(require("axios"));
 const sync_1 = require("csv-parse/sync");
+const mongodb_1 = require("mongodb");
 const database_1 = require("../config/database");
+const UnrealizedPnlService_1 = require("./UnrealizedPnlService");
 const WEBINAR_PAID_CSV_URL = process.env.WEBINAR_PAID_CSV_URL ||
     'https://docs.google.com/spreadsheets/d/e/2PACX-1vSUirjwWnGgKXI6-u5PHlpjuiNastnqr_FBdIfMFthKOoQLrKz_4McjONeLYgy10BCcdV3eKLo-vqvr/pub?gid=444686195&single=true&output=csv';
 // This spreadsheet publishes one tab per day — each a separate Google Form ("Day-0" asks about
@@ -77,6 +79,8 @@ class ActivationTrackerService {
     constructor() {
         this.paidCache = null;
         this.activationCache = null;
+        this.portfolioPnlCache = null;
+        this.unrealizedPnlService = new UnrealizedPnlService_1.UnrealizedPnlService();
     }
     async fetchPaidList() {
         const now = Date.now();
@@ -186,9 +190,119 @@ class ActivationTrackerService {
                 days,
                 score,
                 remark: remarkByPhone.get(p.phone) || '',
+                // Filled in by enrichWithPortfolioAndLogin() afterward.
+                lastLoginAt: null,
+                livePortfolio: null,
+                manualInvestment: null,
             };
         });
-        return { rows, batchDate: batchDateKey };
+        const enrichedRows = await this.enrichWithPortfolioAndLogin(rows);
+        const investedCount = enrichedRows.filter((r) => r.livePortfolio !== null || r.manualInvestment !== null).length;
+        return { rows: enrichedRows, batchDate: batchDateKey, investedCount };
+    }
+    // Identical approach to EmandateTrackerService's own enrichment (see its comments for the full
+    // reasoning) — reuses UnrealizedPnlService's already-verified Live P&L computation untouched, and
+    // shares the SAME `emandate_manual_investments` collection deliberately: "did this person invest
+    // elsewhere" is one fact about the person, not something that should need re-entering per tab.
+    async getCachedLivePortfolios() {
+        const now = Date.now();
+        if (this.portfolioPnlCache && now - this.portfolioPnlCache.ts < SHEET_CACHE_TTL_MS) {
+            return this.portfolioPnlCache.data;
+        }
+        const data = await this.unrealizedPnlService.getLivePortfoliosPnl();
+        this.portfolioPnlCache = { data, ts: now };
+        return data;
+    }
+    async getLastLoginMap(userIds) {
+        const db = (0, database_1.getDatabase)();
+        const objectIds = userIds.filter((id) => mongodb_1.ObjectId.isValid(id)).map((id) => new mongodb_1.ObjectId(id));
+        if (objectIds.length === 0)
+            return new Map();
+        const results = await db
+            .collection('loginlogs')
+            .aggregate([
+            { $match: { userId: { $in: objectIds }, status: 'SUCCESS' } },
+            { $group: { _id: '$userId', lastLogin: { $max: '$loginTime' } } },
+        ])
+            .toArray();
+        const map = new Map();
+        for (const r of results)
+            map.set(r._id.toString(), new Date(r.lastLogin).toISOString());
+        return map;
+    }
+    async enrichWithPortfolioAndLogin(rows) {
+        const db = (0, database_1.getDatabase)();
+        const phones = [...new Set(rows.map((r) => r.phone).filter(Boolean))];
+        if (phones.length === 0)
+            return rows;
+        const users = await db.collection('userdetail').find({}).project({ _id: 1, mobile: 1, whatsappNumber: 1 }).toArray();
+        const userIdByPhone = new Map();
+        for (const u of users) {
+            const phone = normalizePhone(u.mobile || u.whatsappNumber);
+            if (phone && !userIdByPhone.has(phone))
+                userIdByPhone.set(phone, u._id.toString());
+        }
+        const relevantUserIds = [...new Set(phones.map((p) => userIdByPhone.get(p)).filter((id) => !!id))];
+        const [livePortfolios, brokerDocs, lastLoginMap, manualDocs] = await Promise.all([
+            this.getCachedLivePortfolios(),
+            relevantUserIds.length > 0
+                ? db
+                    .collection('portfolio_details')
+                    .find({ userId: { $in: relevantUserIds }, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })
+                    .project({ _id: 1, borkrageType: 1 })
+                    .toArray()
+                : Promise.resolve([]),
+            this.getLastLoginMap(relevantUserIds),
+            db.collection('emandate_manual_investments').find({ phone: { $in: phones } }).toArray(),
+        ]);
+        const brokerByPortfolioId = new Map();
+        for (const b of brokerDocs)
+            brokerByPortfolioId.set(b._id.toString(), b.borkrageType);
+        const portfoliosByUserId = new Map();
+        const relevantUserIdSet = new Set(relevantUserIds);
+        for (const p of livePortfolios) {
+            if (!relevantUserIdSet.has(p.userId))
+                continue;
+            if (!portfoliosByUserId.has(p.userId))
+                portfoliosByUserId.set(p.userId, []);
+            portfoliosByUserId.get(p.userId).push(p);
+        }
+        const manualByPhone = new Map();
+        for (const m of manualDocs)
+            manualByPhone.set(m.phone, m);
+        return rows.map((row) => {
+            const userId = userIdByPhone.get(row.phone) || null;
+            const lastLoginAt = userId ? lastLoginMap.get(userId) || null : null;
+            let livePortfolio = null;
+            const portfolios = userId ? portfoliosByUserId.get(userId) || [] : [];
+            if (portfolios.length > 0) {
+                const brokers = [...new Set(portfolios.map((p) => brokerByPortfolioId.get(p.portfolioId) || 'kite'))];
+                livePortfolio = {
+                    broker: brokers.join(' + '),
+                    count: portfolios.length,
+                    totalInvested: portfolios.reduce((s, p) => s + p.investedValue, 0),
+                    totalCurrent: portfolios.reduce((s, p) => s + p.currentValue, 0),
+                    totalPnl: portfolios.reduce((s, p) => s + p.pnl, 0),
+                    portfolios: portfolios.map((p) => ({
+                        name: p.portfolioName,
+                        broker: brokerByPortfolioId.get(p.portfolioId) || 'kite',
+                        invested: p.investedValue,
+                        current: p.currentValue,
+                        pnl: p.pnl,
+                    })),
+                };
+            }
+            const manual = manualByPhone.get(row.phone);
+            const manualInvestment = manual
+                ? {
+                    broker: manual.broker,
+                    investedAmount: manual.investedAmount,
+                    currentValue: manual.currentValue,
+                    updatedAt: manual.updatedAt ? new Date(manual.updatedAt).toISOString() : '',
+                }
+                : null;
+            return { ...row, lastLoginAt, livePortfolio, manualInvestment };
+        });
     }
     async saveRemark(phone, batchDate, remark) {
         const db = (0, database_1.getDatabase)();

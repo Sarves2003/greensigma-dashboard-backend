@@ -4,6 +4,27 @@ export interface EmandateDayPayment {
     status: 'captured' | 'refunded' | null;
 }
 export type MandateState = 'active' | 'halted' | 'cancelled' | 'not_started' | 'not_applicable';
+export interface EmandatePortfolioLine {
+    name: string;
+    broker: string;
+    invested: number;
+    current: number;
+    pnl: number;
+}
+export interface EmandatePortfolioSummary {
+    broker: string;
+    count: number;
+    totalInvested: number;
+    totalCurrent: number;
+    totalPnl: number;
+    portfolios: EmandatePortfolioLine[];
+}
+export interface EmandateManualInvestment {
+    broker: string;
+    investedAmount: number;
+    currentValue: number;
+    updatedAt: string;
+}
 export interface EmandateRow {
     name: string;
     phone: string;
@@ -18,6 +39,9 @@ export interface EmandateRow {
     settled: boolean;
     paymentDoneCount: number;
     remark: string;
+    lastLoginAt: string | null;
+    livePortfolio: EmandatePortfolioSummary | null;
+    manualInvestment: EmandateManualInvestment | null;
 }
 export interface EmandateSummary {
     totalInitialPaid: number;
@@ -79,6 +103,8 @@ export interface EmandateBatchTableRow extends EmandateSummary {
 export declare class EmandateTrackerService {
     private paidCache;
     private subscribeCache;
+    private portfolioPnlCache;
+    private unrealizedPnlService;
     private fetchPaidList;
     private fetchSubscribeDocs;
     private buildSubscribeIndex;
@@ -90,9 +116,13 @@ export declare class EmandateTrackerService {
         summary: EmandateSummary;
         batchDate: string;
     }>;
+    private getCachedLivePortfolios;
+    private getLastLoginMap;
+    private enrichWithPortfolioAndLogin;
     getOverview(batchDateKeys: string[]): Promise<EmandateOverview>;
     getBatchTable(batchDateKeys: string[]): Promise<EmandateBatchTableRow[]>;
     saveRemark(phone: string, batchDate: string, remark: string): Promise<void>;
     savePaymentStatusOverride(phone: string, batchDate: string, statusOverride: PaymentStatus | null): Promise<void>;
+    saveManualInvestment(phone: string, broker: string, investedAmount: number, currentValue: number): Promise<void>;
 }
 //# sourceMappingURL=EmandateTrackerService.d.ts.map

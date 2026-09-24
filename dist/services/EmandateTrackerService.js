@@ -6,7 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.EmandateTrackerService = void 0;
 const axios_1 = __importDefault(require("axios"));
 const sync_1 = require("csv-parse/sync");
+const mongodb_1 = require("mongodb");
 const database_1 = require("../config/database");
+const UnrealizedPnlService_1 = require("./UnrealizedPnlService");
 const WEBINAR_PAID_CSV_URL = process.env.WEBINAR_PAID_CSV_URL ||
     'https://docs.google.com/spreadsheets/d/e/2PACX-1vSUirjwWnGgKXI6-u5PHlpjuiNastnqr_FBdIfMFthKOoQLrKz_4McjONeLYgy10BCcdV3eKLo-vqvr/pub?gid=444686195&single=true&output=csv';
 const SHEET_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -63,6 +65,8 @@ class EmandateTrackerService {
     constructor() {
         this.paidCache = null;
         this.subscribeCache = null;
+        this.portfolioPnlCache = null;
+        this.unrealizedPnlService = new UnrealizedPnlService_1.UnrealizedPnlService();
     }
     async fetchPaidList() {
         const now = Date.now();
@@ -227,6 +231,12 @@ class EmandateTrackerService {
                 settled,
                 paymentDoneCount,
                 remark: saved?.remark || '',
+                // Filled in by enrichWithPortfolioAndLogin() afterward — buildBatchRows() itself stays
+                // fast and portfolio/login-free since Overview/BatchTable call it across many batches at
+                // once and don't need per-row portfolio detail at all.
+                lastLoginAt: null,
+                livePortfolio: null,
+                manualInvestment: null,
             });
         });
         const totalInitialPaid = rows.length;
@@ -273,7 +283,121 @@ class EmandateTrackerService {
     async getEmandateTable(batchDateKey) {
         const { paidRows, byPhone, byEmail, remarksByBatch } = await this.loadCommonData([batchDateKey]);
         const { rows, summary } = this.buildBatchRows(batchDateKey, paidRows, byPhone, byEmail, remarksByBatch.get(batchDateKey) || []);
-        return { rows, summary, batchDate: batchDateKey };
+        const enrichedRows = await this.enrichWithPortfolioAndLogin(rows);
+        return { rows: enrichedRows, summary, batchDate: batchDateKey };
+    }
+    // Reuses UnrealizedPnlService's own already-verified Live P&L computation completely untouched
+    // (never edited, never re-implemented) — this is the safest possible way to answer "does this
+    // person have a real live portfolio", since it can never silently drift from what the Live P&L
+    // tab itself shows. Cached the same 10-minute way as the sheet/gsSubscribe data above, since it's
+    // a full-platform computation (live stock prices included) and this view only needs it, at most,
+    // refreshed every few minutes.
+    async getCachedLivePortfolios() {
+        const now = Date.now();
+        if (this.portfolioPnlCache && now - this.portfolioPnlCache.ts < SHEET_CACHE_TTL_MS) {
+            return this.portfolioPnlCache.data;
+        }
+        const data = await this.unrealizedPnlService.getLivePortfoliosPnl();
+        this.portfolioPnlCache = { data, ts: now };
+        return data;
+    }
+    // loginlogs.userId is a real ObjectId (see UsageAnalysisService's identical note) — querying with
+    // a string silently matches nothing.
+    async getLastLoginMap(userIds) {
+        const db = (0, database_1.getDatabase)();
+        const objectIds = userIds.filter((id) => mongodb_1.ObjectId.isValid(id)).map((id) => new mongodb_1.ObjectId(id));
+        if (objectIds.length === 0)
+            return new Map();
+        const results = await db
+            .collection('loginlogs')
+            .aggregate([
+            { $match: { userId: { $in: objectIds }, status: 'SUCCESS' } },
+            { $group: { _id: '$userId', lastLogin: { $max: '$loginTime' } } },
+        ])
+            .toArray();
+        const map = new Map();
+        for (const r of results)
+            map.set(r._id.toString(), new Date(r.lastLogin).toISOString());
+        return map;
+    }
+    // Enriches the single-batch Users-table rows only (Overview/BatchTable never call this — they
+    // don't show per-row portfolio/login detail, so there's no reason to pay for it there). This is
+    // the ONLY place this tracker ever touches `userdetail`/`portfolio_details`/`loginlogs` — phone
+    // is resolved to a userId by normalized-phone match against userdetail, same approach as
+    // UsageAnalysisService.getUserLookupMaps().
+    async enrichWithPortfolioAndLogin(rows) {
+        const db = (0, database_1.getDatabase)();
+        const phones = [...new Set(rows.map((r) => r.phone).filter(Boolean))];
+        if (phones.length === 0)
+            return rows;
+        const users = await db.collection('userdetail').find({}).project({ _id: 1, mobile: 1, whatsappNumber: 1 }).toArray();
+        const userIdByPhone = new Map();
+        for (const u of users) {
+            const phone = normalizePhone(u.mobile || u.whatsappNumber);
+            if (phone && !userIdByPhone.has(phone))
+                userIdByPhone.set(phone, u._id.toString());
+        }
+        const relevantUserIds = [...new Set(phones.map((p) => userIdByPhone.get(p)).filter((id) => !!id))];
+        const [livePortfolios, brokerDocs, lastLoginMap, manualDocs] = await Promise.all([
+            this.getCachedLivePortfolios(),
+            relevantUserIds.length > 0
+                ? db
+                    .collection('portfolio_details')
+                    .find({ userId: { $in: relevantUserIds }, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })
+                    .project({ _id: 1, borkrageType: 1 })
+                    .toArray()
+                : Promise.resolve([]),
+            this.getLastLoginMap(relevantUserIds),
+            db.collection('emandate_manual_investments').find({ phone: { $in: phones } }).toArray(),
+        ]);
+        const brokerByPortfolioId = new Map();
+        for (const b of brokerDocs)
+            brokerByPortfolioId.set(b._id.toString(), b.borkrageType);
+        const portfoliosByUserId = new Map();
+        const relevantUserIdSet = new Set(relevantUserIds);
+        for (const p of livePortfolios) {
+            if (!relevantUserIdSet.has(p.userId))
+                continue;
+            if (!portfoliosByUserId.has(p.userId))
+                portfoliosByUserId.set(p.userId, []);
+            portfoliosByUserId.get(p.userId).push(p);
+        }
+        const manualByPhone = new Map();
+        for (const m of manualDocs)
+            manualByPhone.set(m.phone, m);
+        return rows.map((row) => {
+            const userId = userIdByPhone.get(row.phone) || null;
+            const lastLoginAt = userId ? lastLoginMap.get(userId) || null : null;
+            let livePortfolio = null;
+            const portfolios = userId ? portfoliosByUserId.get(userId) || [] : [];
+            if (portfolios.length > 0) {
+                const brokers = [...new Set(portfolios.map((p) => brokerByPortfolioId.get(p.portfolioId) || 'kite'))];
+                livePortfolio = {
+                    broker: brokers.join(' + '),
+                    count: portfolios.length,
+                    totalInvested: portfolios.reduce((s, p) => s + p.investedValue, 0),
+                    totalCurrent: portfolios.reduce((s, p) => s + p.currentValue, 0),
+                    totalPnl: portfolios.reduce((s, p) => s + p.pnl, 0),
+                    portfolios: portfolios.map((p) => ({
+                        name: p.portfolioName,
+                        broker: brokerByPortfolioId.get(p.portfolioId) || 'kite',
+                        invested: p.investedValue,
+                        current: p.currentValue,
+                        pnl: p.pnl,
+                    })),
+                };
+            }
+            const manual = manualByPhone.get(row.phone);
+            const manualInvestment = manual
+                ? {
+                    broker: manual.broker,
+                    investedAmount: manual.investedAmount,
+                    currentValue: manual.currentValue,
+                    updatedAt: manual.updatedAt ? new Date(manual.updatedAt).toISOString() : '',
+                }
+                : null;
+            return { ...row, lastLoginAt, livePortfolio, manualInvestment };
+        });
     }
     // Aggregates the same per-batch classification across an arbitrary set of batches (this/previous/
     // last-2/custom, decided by the frontend) — used by the overview card above the single-batch table.
@@ -357,6 +481,13 @@ class EmandateTrackerService {
             ? { $unset: { paymentStatusOverride: '' }, $set: { phone, batchDate, updatedAt: new Date() } }
             : { $set: { phone, batchDate, paymentStatusOverride: statusOverride, updatedAt: new Date() } };
         await db.collection('emandate_remarks').updateOne({ phone, batchDate }, update, { upsert: true });
+    }
+    // Keyed by phone alone (not batch) — "did this person invest elsewhere" is a fact about the
+    // person, not about which webinar batch they attended, so it shouldn't need re-entering if their
+    // row is ever viewed under a different batch date.
+    async saveManualInvestment(phone, broker, investedAmount, currentValue) {
+        const db = (0, database_1.getDatabase)();
+        await db.collection('emandate_manual_investments').updateOne({ phone }, { $set: { phone, broker, investedAmount, currentValue, updatedAt: new Date() } }, { upsert: true });
     }
 }
 exports.EmandateTrackerService = EmandateTrackerService;

@@ -4,6 +4,13 @@ exports.LEDGER_SOURCES = exports.OverviewV2Service = exports.ACTIVE_ACTION_COLLE
 const database_1 = require("../config/database");
 const LOGIN_DATA_CUTOFF = new Date('2026-05-23');
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// userdetail.type has two distinct values for the same paid tier — 'Tribe' (monthly) and
+// 'TribeYearly' (annual) — but 'TribeYearly' has been the overwhelming majority of real Tribe
+// signups since at least 2024 (checked directly: e.g. Aug 2026 had 135 TribeYearly vs 1 plain
+// Tribe). Every "Tribe cohort" query below must match both or its denominator collapses to
+// near-zero, which is exactly what was making Activation Rate / New Premium Users / Monthly
+// Active Paid look nonsensical.
+const TRIBE_TYPES = ['Tribe', 'TribeYearly'];
 const LEDGER_SOURCES = ['login', 'stockScore', 'stockBacktest', 'etfScore', 'etfBacktest', 'intraday', 'portfolio', 'broker'];
 exports.LEDGER_SOURCES = LEDGER_SOURCES;
 // Same 7 features as getActiveUserCount's "active" definition — login alone never counts.
@@ -39,7 +46,7 @@ class OverviewV2Service {
     buildUserFilter(filters) {
         const f = {};
         if (filters.userType)
-            f.type = filters.userType;
+            f.type = filters.userType === 'Tribe' ? { $in: TRIBE_TYPES } : filters.userType;
         if (filters.state)
             f.state = filters.state;
         if (filters.district)
@@ -58,7 +65,7 @@ class OverviewV2Service {
             createdOn: { $gte: startDate, $lt: endDate },
         }).project({ _id: 1, createdOn: 1, type: 1 }).toArray();
         const newSignups = signups.length;
-        const newPaidCustomers = signups.filter((u) => u.type === 'Tribe').length;
+        const newPaidCustomers = signups.filter((u) => TRIBE_TYPES.includes(u.type)).length;
         const daysInPeriod = Math.max(1, (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
         // Active User Count - ONLY users who signed up in this period AND took ≥1 action (7 features, no login) in this same period
         const signupIdsStr = signups.map((u) => u._id.toString());
@@ -255,7 +262,7 @@ class OverviewV2Service {
             const cStart = monthStart(key);
             const cEnd = addMonths(cStart, 1);
             const users = await db.collection('userdetail').find({
-                type: 'Tribe',
+                type: { $in: TRIBE_TYPES },
                 createdOn: { $gte: cStart, $lt: cEnd },
             }).project({ _id: 1, createdOn: 1 }).toArray();
             if (users.length === 0) {
@@ -291,6 +298,37 @@ class OverviewV2Service {
         }
         return { rows };
     }
+    // ============ PLOT 3b: Avg days from signup to first real portfolio, per signup month
+    // (ignores ALL global filters). Cohort = Tribe signups that month, same scope as Activation
+    // Rate above. Unbounded lookahead for the portfolio side (no day-window cap), and users who
+    // haven't deployed yet by the time this runs are simply excluded from that month's average —
+    // so a very recent month's number is provisional and will likely rise as stragglers convert. ============
+    async getAvgDaysToPortfolioTrend(monthKeys) {
+        const db = (0, database_1.getDatabase)();
+        const rows = [];
+        for (const key of monthKeys) {
+            const cStart = monthStart(key);
+            const cEnd = addMonths(cStart, 1);
+            const signups = await db.collection('userdetail').find({
+                type: { $in: TRIBE_TYPES },
+                createdOn: { $gte: cStart, $lt: cEnd },
+            }).project({ _id: 1, createdOn: 1 }).toArray();
+            if (signups.length === 0) {
+                rows.push({ monthLabel: monthLabel(key), cohortSize: 0, deployedCount: 0, avgDays: null });
+                continue;
+            }
+            const signupIdsStr = signups.map((u) => u._id.toString());
+            const avgDays = await this.getAvgDaysToFirstPortfolio(signupIdsStr, signups);
+            const deployedUsers = await db.collection('portfolio_details').distinct('userId', {
+                userId: { $in: signupIdsStr },
+                isInvested: true,
+                borkrageType: { $in: ['kite', 'zebu'] },
+            });
+            const deployedCount = deployedUsers.length;
+            rows.push({ monthLabel: monthLabel(key), cohortSize: signups.length, deployedCount, avgDays });
+        }
+        return { rows };
+    }
     // ============ PLOT 4: Live-capital deployment rate, real only, unbounded, Tribe only (ignores ALL global filters) ============
     async getLiveCapitalRate(monthKeys) {
         const db = (0, database_1.getDatabase)();
@@ -300,7 +338,7 @@ class OverviewV2Service {
             const cStart = monthStart(key);
             const cEnd = addMonths(cStart, 1);
             const cohortUsers = await db.collection('userdetail').find({
-                type: 'Tribe',
+                type: { $in: TRIBE_TYPES },
                 createdOn: { $gte: cStart, $lt: cEnd },
             }).project({ _id: 1 }).toArray();
             if (cohortUsers.length === 0)
@@ -329,7 +367,7 @@ class OverviewV2Service {
     }
     async computeMonthlyActivePaid(ledgerItems) {
         const db = (0, database_1.getDatabase)();
-        const tribeUsers = await db.collection('userdetail').find({ type: 'Tribe' }).project({ _id: 1 }).toArray();
+        const tribeUsers = await db.collection('userdetail').find({ type: { $in: TRIBE_TYPES } }).project({ _id: 1 }).toArray();
         const tribeIdsStr = tribeUsers.map((u) => u._id.toString());
         const tribeObjectIds = tribeUsers.map((u) => u._id);
         const now = new Date();

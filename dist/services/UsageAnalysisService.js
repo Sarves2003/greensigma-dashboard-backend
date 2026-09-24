@@ -16,9 +16,16 @@ function escapeRegex(raw) {
 }
 // "Webminar" is a 3-record data-entry typo for "Webinar" in userdetail.type — merged here so the
 // Type filter/column behaves as one category instead of silently splitting a handful of users off.
+// "TribeYearly" is a real, distinct annual-billing variant of "Tribe" (not a typo) — merged the
+// same way since it's the large majority of the paid cohort and the UI only ever needs one "Tribe"
+// bucket, not a separate monthly/yearly split (confirmed: no UI button should be added for it).
 function normalizeUserType(raw) {
     const t = (raw || '').trim();
-    return t === 'Webminar' ? 'Webinar' : t;
+    if (t === 'Webminar')
+        return 'Webinar';
+    if (t === 'TribeYearly')
+        return 'Tribe';
+    return t;
 }
 // Intent = "did they take an action that says they want to talk to a human", scored only from
 // demo call / assessment activity — deliberately excludes product usage entirely so it stays a
@@ -63,7 +70,15 @@ class UsageAnalysisService {
                 query.createdOn.$lte = filters.endDate;
         }
         if (filters.type && filters.type !== 'all') {
-            query.type = filters.type === 'Webinar' ? { $in: ['Webinar', 'Webminar'] } : filters.type;
+            if (filters.type === 'Webinar') {
+                query.type = { $in: ['Webinar', 'Webminar'] };
+            }
+            else if (filters.type === 'Tribe') {
+                query.type = { $in: ['Tribe', 'TribeYearly'] };
+            }
+            else {
+                query.type = filters.type;
+            }
         }
         if (filters.referalCode) {
             query.referalCode = { $regex: escapeRegex(filters.referalCode), $options: 'i' };

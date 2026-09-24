@@ -6,6 +6,10 @@ const LoginLogRepository_1 = require("../repository/LoginLogRepository");
 const ActivityRepository_1 = require("../repository/ActivityRepository");
 const BrokerRepository_1 = require("../repository/BrokerRepository");
 const LOGIN_DATA_CUTOFF = new Date('2026-05-23');
+// userdetail.type splits the paid tier into 'Tribe' (monthly) and 'TribeYearly' (annual) — both
+// must count together as "Tribe" or the cohort collapses toward zero (TribeYearly has been the
+// large majority of paid signups since 2024).
+const TRIBE_TYPES = ['Tribe', 'TribeYearly'];
 class AnalyticsService {
     constructor() {
         this.userRepo = new UserRepository_1.UserRepository();
@@ -22,7 +26,7 @@ class AnalyticsService {
     buildUserFilter(filters) {
         const userFilter = {};
         if (filters.userType) {
-            userFilter.type = filters.userType;
+            userFilter.type = filters.userType === 'Tribe' ? { $in: TRIBE_TYPES } : filters.userType;
         }
         if (filters.state) {
             userFilter.state = filters.state;

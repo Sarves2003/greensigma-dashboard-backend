@@ -81,5 +81,20 @@ router.post('/status-override', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to save status override', timestamp: new Date().toISOString() });
     }
 });
+router.post('/manual-investment', async (req, res) => {
+    try {
+        const { phone, broker, investedAmount, currentValue } = req.body || {};
+        if (!phone || !broker) {
+            res.status(400).json({ success: false, error: 'phone and broker are required', timestamp: new Date().toISOString() });
+            return;
+        }
+        await service.saveManualInvestment(phone, broker, Number(investedAmount) || 0, Number(currentValue) || 0);
+        res.json({ success: true, data: { saved: true }, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error saving manual investment:', error);
+        res.status(500).json({ success: false, error: 'Failed to save manual investment', timestamp: new Date().toISOString() });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=emandateTracker.js.map

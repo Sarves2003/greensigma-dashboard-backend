@@ -12,6 +12,10 @@ const BrokerRepository_1 = require("../repository/BrokerRepository");
 const BrokerRepository_2 = require("../repository/BrokerRepository");
 const database_1 = require("../config/database");
 const LOGIN_DATA_CUTOFF = new Date('2026-05-23');
+// userdetail.type splits the paid tier into 'Tribe' (monthly) and 'TribeYearly' (annual) — both
+// must count together as "Tribe" or the cohort collapses toward zero (TribeYearly has been the
+// large majority of paid signups since 2024).
+const TRIBE_TYPES = ['Tribe', 'TribeYearly'];
 class RetentionService {
     constructor() {
         this.userRepo = new UserRepository_1.UserRepository();
@@ -35,7 +39,7 @@ class RetentionService {
             }
         };
         if (filters.userType) {
-            userFilter.type = filters.userType;
+            userFilter.type = filters.userType === 'Tribe' ? { $in: TRIBE_TYPES } : filters.userType;
         }
         // Get users registered in the date range
         const users = await this.userRepo.findMany(userFilter);
@@ -297,7 +301,7 @@ class RetentionService {
             }
         };
         if (filters.userType) {
-            userFilter.type = filters.userType;
+            userFilter.type = filters.userType === 'Tribe' ? { $in: TRIBE_TYPES } : filters.userType;
         }
         // Get users registered in this period only
         const users = await this.userRepo.findMany(userFilter);

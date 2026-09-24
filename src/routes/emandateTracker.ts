@@ -82,4 +82,19 @@ router.post('/status-override', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/manual-investment', async (req: Request, res: Response) => {
+  try {
+    const { phone, broker, investedAmount, currentValue } = req.body || {};
+    if (!phone || !broker) {
+      res.status(400).json({ success: false, error: 'phone and broker are required', timestamp: new Date().toISOString() } as APIResponse<null>);
+      return;
+    }
+    await service.saveManualInvestment(phone, broker, Number(investedAmount) || 0, Number(currentValue) || 0);
+    res.json({ success: true, data: { saved: true }, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error saving manual investment:', error);
+    res.status(500).json({ success: false, error: 'Failed to save manual investment', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
 export default router;

@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb';
+type LeadGroup = 'webinar' | 'organic' | 'salesteam';
 interface BatchDateDoc {
     _id: ObjectId;
     date: Date;
@@ -24,7 +25,7 @@ export declare class FunnelAnalysisService {
     getSegment1(startDate: Date, endDate: Date): Promise<any>;
     getSegment2(): Promise<any>;
     getSegment3(): Promise<any>;
-    getWebinarBatchDetail(requestedKeys?: string[], strictChennai?: boolean): Promise<any[]>;
+    getWebinarBatchDetail(requestedKeys?: string[], strictChennai?: boolean, groups?: LeadGroup[]): Promise<Record<LeadGroup, any[]>>;
 }
 export {};
 //# sourceMappingURL=FunnelAnalysisService.d.ts.map

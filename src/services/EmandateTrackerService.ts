@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { parse } from 'csv-parse/sync';
+import { ObjectId } from 'mongodb';
 import { getDatabase } from '../config/database';
+import { UnrealizedPnlService } from './UnrealizedPnlService';
 
 const WEBINAR_PAID_CSV_URL =
   process.env.WEBINAR_PAID_CSV_URL ||
@@ -101,6 +103,34 @@ interface PersonFacts {
   currentState: MandateState;
 }
 
+// One line per real, live portfolio (same "isInvested + kite/zebu" definition as the Live P&L
+// tab), so a person with more than one shows every one of them, not just a blended total.
+export interface EmandatePortfolioLine {
+  name: string;
+  broker: string;
+  invested: number;
+  current: number;
+  pnl: number;
+}
+
+export interface EmandatePortfolioSummary {
+  broker: string; // 'kite', 'zebu', or 'kite + zebu' if they somehow have both
+  count: number;
+  totalInvested: number;
+  totalCurrent: number;
+  totalPnl: number;
+  portfolios: EmandatePortfolioLine[];
+}
+
+// Self-reported: the person invested manually through a broker GreenSigma doesn't track. Only
+// meaningful when `livePortfolio` is null — a real tracked portfolio always takes precedence.
+export interface EmandateManualInvestment {
+  broker: string;
+  investedAmount: number;
+  currentValue: number;
+  updatedAt: string;
+}
+
 export interface EmandateRow {
   name: string;
   phone: string;
@@ -117,6 +147,9 @@ export interface EmandateRow {
   settled: boolean;
   paymentDoneCount: number;
   remark: string;
+  lastLoginAt: string | null;
+  livePortfolio: EmandatePortfolioSummary | null;
+  manualInvestment: EmandateManualInvestment | null;
 }
 
 export interface EmandateSummary {
@@ -190,6 +223,8 @@ const STATE_PRIORITY: Record<string, number> = { active: 4, halted: 3, cancelled
 export class EmandateTrackerService {
   private paidCache: { data: PaidRow[]; ts: number } | null = null;
   private subscribeCache: { data: SubscribeDoc[]; ts: number } | null = null;
+  private portfolioPnlCache: { data: any[]; ts: number } | null = null;
+  private unrealizedPnlService = new UnrealizedPnlService();
 
   private async fetchPaidList(): Promise<PaidRow[]> {
     const now = Date.now();
@@ -376,6 +411,12 @@ export class EmandateTrackerService {
         settled,
         paymentDoneCount,
         remark: saved?.remark || '',
+        // Filled in by enrichWithPortfolioAndLogin() afterward — buildBatchRows() itself stays
+        // fast and portfolio/login-free since Overview/BatchTable call it across many batches at
+        // once and don't need per-row portfolio detail at all.
+        lastLoginAt: null,
+        livePortfolio: null,
+        manualInvestment: null,
       });
     });
 
@@ -428,7 +469,128 @@ export class EmandateTrackerService {
   async getEmandateTable(batchDateKey: string): Promise<{ rows: EmandateRow[]; summary: EmandateSummary; batchDate: string }> {
     const { paidRows, byPhone, byEmail, remarksByBatch } = await this.loadCommonData([batchDateKey]);
     const { rows, summary } = this.buildBatchRows(batchDateKey, paidRows, byPhone, byEmail, remarksByBatch.get(batchDateKey) || []);
-    return { rows, summary, batchDate: batchDateKey };
+    const enrichedRows = await this.enrichWithPortfolioAndLogin(rows);
+    return { rows: enrichedRows, summary, batchDate: batchDateKey };
+  }
+
+  // Reuses UnrealizedPnlService's own already-verified Live P&L computation completely untouched
+  // (never edited, never re-implemented) — this is the safest possible way to answer "does this
+  // person have a real live portfolio", since it can never silently drift from what the Live P&L
+  // tab itself shows. Cached the same 10-minute way as the sheet/gsSubscribe data above, since it's
+  // a full-platform computation (live stock prices included) and this view only needs it, at most,
+  // refreshed every few minutes.
+  private async getCachedLivePortfolios(): Promise<any[]> {
+    const now = Date.now();
+    if (this.portfolioPnlCache && now - this.portfolioPnlCache.ts < SHEET_CACHE_TTL_MS) {
+      return this.portfolioPnlCache.data;
+    }
+    const data = await this.unrealizedPnlService.getLivePortfoliosPnl();
+    this.portfolioPnlCache = { data, ts: now };
+    return data;
+  }
+
+  // loginlogs.userId is a real ObjectId (see UsageAnalysisService's identical note) — querying with
+  // a string silently matches nothing.
+  private async getLastLoginMap(userIds: string[]): Promise<Map<string, string>> {
+    const db = getDatabase();
+    const objectIds = userIds.filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
+    if (objectIds.length === 0) return new Map();
+
+    const results = await db
+      .collection('loginlogs')
+      .aggregate([
+        { $match: { userId: { $in: objectIds }, status: 'SUCCESS' } },
+        { $group: { _id: '$userId', lastLogin: { $max: '$loginTime' } } },
+      ])
+      .toArray();
+
+    const map = new Map<string, string>();
+    for (const r of results as any[]) map.set(r._id.toString(), new Date(r.lastLogin).toISOString());
+    return map;
+  }
+
+  // Enriches the single-batch Users-table rows only (Overview/BatchTable never call this — they
+  // don't show per-row portfolio/login detail, so there's no reason to pay for it there). This is
+  // the ONLY place this tracker ever touches `userdetail`/`portfolio_details`/`loginlogs` — phone
+  // is resolved to a userId by normalized-phone match against userdetail, same approach as
+  // UsageAnalysisService.getUserLookupMaps().
+  private async enrichWithPortfolioAndLogin(rows: EmandateRow[]): Promise<EmandateRow[]> {
+    const db = getDatabase();
+    const phones = [...new Set(rows.map((r) => r.phone).filter(Boolean))];
+    if (phones.length === 0) return rows;
+
+    const users = await db.collection('userdetail').find({}).project({ _id: 1, mobile: 1, whatsappNumber: 1 }).toArray();
+    const userIdByPhone = new Map<string, string>();
+    for (const u of users as any[]) {
+      const phone = normalizePhone(u.mobile || u.whatsappNumber);
+      if (phone && !userIdByPhone.has(phone)) userIdByPhone.set(phone, u._id.toString());
+    }
+
+    const relevantUserIds = [...new Set(phones.map((p) => userIdByPhone.get(p)).filter((id): id is string => !!id))];
+
+    const [livePortfolios, brokerDocs, lastLoginMap, manualDocs] = await Promise.all([
+      this.getCachedLivePortfolios(),
+      relevantUserIds.length > 0
+        ? db
+            .collection('portfolio_details')
+            .find({ userId: { $in: relevantUserIds }, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })
+            .project({ _id: 1, borkrageType: 1 })
+            .toArray()
+        : Promise.resolve([]),
+      this.getLastLoginMap(relevantUserIds),
+      db.collection('emandate_manual_investments').find({ phone: { $in: phones } }).toArray(),
+    ]);
+
+    const brokerByPortfolioId = new Map<string, string>();
+    for (const b of brokerDocs as any[]) brokerByPortfolioId.set(b._id.toString(), b.borkrageType);
+
+    const portfoliosByUserId = new Map<string, any[]>();
+    const relevantUserIdSet = new Set(relevantUserIds);
+    for (const p of livePortfolios) {
+      if (!relevantUserIdSet.has(p.userId)) continue;
+      if (!portfoliosByUserId.has(p.userId)) portfoliosByUserId.set(p.userId, []);
+      portfoliosByUserId.get(p.userId)!.push(p);
+    }
+
+    const manualByPhone = new Map<string, any>();
+    for (const m of manualDocs as any[]) manualByPhone.set(m.phone, m);
+
+    return rows.map((row) => {
+      const userId = userIdByPhone.get(row.phone) || null;
+      const lastLoginAt = userId ? lastLoginMap.get(userId) || null : null;
+
+      let livePortfolio: EmandatePortfolioSummary | null = null;
+      const portfolios = userId ? portfoliosByUserId.get(userId) || [] : [];
+      if (portfolios.length > 0) {
+        const brokers = [...new Set(portfolios.map((p) => brokerByPortfolioId.get(p.portfolioId) || 'kite'))];
+        livePortfolio = {
+          broker: brokers.join(' + '),
+          count: portfolios.length,
+          totalInvested: portfolios.reduce((s, p) => s + p.investedValue, 0),
+          totalCurrent: portfolios.reduce((s, p) => s + p.currentValue, 0),
+          totalPnl: portfolios.reduce((s, p) => s + p.pnl, 0),
+          portfolios: portfolios.map((p) => ({
+            name: p.portfolioName,
+            broker: brokerByPortfolioId.get(p.portfolioId) || 'kite',
+            invested: p.investedValue,
+            current: p.currentValue,
+            pnl: p.pnl,
+          })),
+        };
+      }
+
+      const manual = manualByPhone.get(row.phone);
+      const manualInvestment: EmandateManualInvestment | null = manual
+        ? {
+            broker: manual.broker,
+            investedAmount: manual.investedAmount,
+            currentValue: manual.currentValue,
+            updatedAt: manual.updatedAt ? new Date(manual.updatedAt).toISOString() : '',
+          }
+        : null;
+
+      return { ...row, lastLoginAt, livePortfolio, manualInvestment };
+    });
   }
 
   // Aggregates the same per-batch classification across an arbitrary set of batches (this/previous/
@@ -523,5 +685,17 @@ export class EmandateTrackerService {
       ? { $unset: { paymentStatusOverride: '' }, $set: { phone, batchDate, updatedAt: new Date() } }
       : { $set: { phone, batchDate, paymentStatusOverride: statusOverride, updatedAt: new Date() } };
     await db.collection('emandate_remarks').updateOne({ phone, batchDate }, update as any, { upsert: true });
+  }
+
+  // Keyed by phone alone (not batch) — "did this person invest elsewhere" is a fact about the
+  // person, not about which webinar batch they attended, so it shouldn't need re-entering if their
+  // row is ever viewed under a different batch date.
+  async saveManualInvestment(phone: string, broker: string, investedAmount: number, currentValue: number): Promise<void> {
+    const db = getDatabase();
+    await db.collection('emandate_manual_investments').updateOne(
+      { phone },
+      { $set: { phone, broker, investedAmount, currentValue, updatedAt: new Date() } },
+      { upsert: true }
+    );
   }
 }

@@ -50,7 +50,7 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'card:gs-health:key-metrics', label: 'Key Metrics', type: 'card', tabKey: 'tab:gs-health' },
   { key: 'card:gs-health:trends', label: 'Trends & By-Year Comparison', type: 'card', tabKey: 'tab:gs-health' },
   { key: 'card:gs-health:webinar', label: 'Webinar Channel Metrics', type: 'card', tabKey: 'tab:gs-health' },
-  { key: 'card:gs-health:leadform', label: 'Lead Form Channel Metrics', type: 'card', tabKey: 'tab:gs-health' },
+  { key: 'card:gs-health:leadform', label: 'Demo Funnel Channel Metrics', type: 'card', tabKey: 'tab:gs-health' },
 
   { key: 'tab:funnel-analysis', label: 'Funnel Analysis', type: 'tab' },
   { key: 'card:funnel-analysis:segment1', label: 'Period Funnel Breakdown', type: 'card', tabKey: 'tab:funnel-analysis' },

@@ -36,7 +36,9 @@ const MONTH_MAP: Record<string, number> = {
 // Parses compact forms like "21Jun2025", "03Jan2026", "20Dec-2025".
 function parseFlexibleDate(raw: string): Date | null {
   if (!raw) return null;
-  const s = raw.trim().replace(/[-/]/g, '').toLowerCase();
+  // Dots and spaces are stripped too — newer sheet rows use "23.September2026", which the old
+  // dash/slash-only strip left unparseable (so those paid rows silently never matched a batch).
+  const s = raw.trim().replace(/[-/.\s]/g, '').toLowerCase();
   const m = s.match(/^(\d{1,2})([a-z]+)(\d{4})$/);
   if (!m) return null;
   const day = parseInt(m[1], 10);
@@ -44,6 +46,24 @@ function parseFlexibleDate(raw: string): Date | null {
   const year = parseInt(m[3], 10);
   if (month === undefined || isNaN(day) || isNaN(year)) return null;
   return new Date(Date.UTC(year, month, day));
+}
+
+// The paid sheet's "Lead" column decides which analysis card a paid person belongs to:
+//   - starts with "Webinar" (e.g. "Webinar - Momentum", "Webinar - ETF", "Webinar Algo Trading")
+//     -> the Webinar card, and whatever follows the prefix is that batch's webinar NAME
+//   - the Sales Team tag ("Salesteam", "Sales Team", ...)          -> Sales Team card
+//   - anything else (Organic, GS Momentum, blank, ...)             -> Organic card
+type LeadGroup = 'webinar' | 'organic' | 'salesteam';
+
+function classifyLead(rawLead: string): { group: LeadGroup; webinarName: string | null } {
+  const lead = (rawLead || '').trim();
+  const compact = lead.toLowerCase().replace(/[\s\-_]+/g, '');
+  if (compact === 'salesteam') return { group: 'salesteam', webinarName: null };
+  if (/^webinar/i.test(lead)) {
+    const name = lead.replace(/^webinar/i, '').replace(/^[\s\-–—:_]+/, '').replace(/\s+/g, ' ').trim();
+    return { group: 'webinar', webinarName: name || null };
+  }
+  return { group: 'organic', webinarName: null };
 }
 
 // Parses "Momentum Investing Webinar - 20th JUNE 2026" style Offering strings.
@@ -120,6 +140,7 @@ interface PaidRow {
   email: string;
   phone: string;
   rawBatchDate: string;
+  lead: string;
 }
 
 interface BatchDateDoc {
@@ -243,6 +264,7 @@ export class FunnelAnalysisService {
       email: normalizeEmail(r['email']),
       phone: normalizePhone(r['whatsapp_number']),
       rawBatchDate: (r['Webinar Date'] || '').trim(),
+      lead: (r['Lead'] || '').trim(),
     }));
 
     this.paidCache = { data: rows, ts: now };
@@ -458,7 +480,15 @@ export class FunnelAnalysisService {
   // webinar (Current Webinar), a DIFFERENT one (bucketed by that webinar's date, using their
   // earliest registration if they have several), or none at all (fall back to their userdetail
   // referalCode, same normalization as computeFunnelTag).
-  async getWebinarBatchDetail(requestedKeys?: string[], strictChennai = false): Promise<any[]> {
+  //
+  // Returns one array of per-batch blocks for EACH Lead group (Webinar / Organic / Sales Team). The
+  // registration side (registrants, Chennai/non-Chennai registrant counts) has no Lead column to
+  // split on, so it is identical across the groups; only the paid side is filtered by Lead.
+  async getWebinarBatchDetail(
+    requestedKeys?: string[],
+    strictChennai = false,
+    groups?: LeadGroup[]
+  ): Promise<Record<LeadGroup, any[]>> {
     const [paidRows, registrations, masterDates] = await Promise.all([
       this.fetchPaidList(),
       this.fetchRegistrations(),
@@ -467,9 +497,17 @@ export class FunnelAnalysisService {
 
     const dateKeys = requestedKeys && requestedKeys.length > 0
       ? requestedKeys
-      : masterDates.slice(-2).reverse().map((d) => d.toISOString().slice(0, 10));
+      : masterDates.slice(-1).map((d) => d.toISOString().slice(0, 10));
 
-    const resolved = paidRows.map((r) => ({ ...r, resolution: this.resolveBatch(r.rawBatchDate, masterDates) }));
+    const resolved = paidRows.map((r) => {
+      const lead = classifyLead(r.lead);
+      return {
+        ...r,
+        resolution: this.resolveBatch(r.rawBatchDate, masterDates),
+        leadGroup: lead.group,
+        webinarName: lead.webinarName,
+      };
+    });
 
     const registrantsByDate = new Map<string, number>();
     for (const r of registrations) {
@@ -525,11 +563,19 @@ export class FunnelAnalysisService {
       return classifyLocation(u?.district, uploadedLocation, strictChennai);
     };
 
-    return dateKeys.map((key) => {
+    const buildForGroup = (group: LeadGroup): any[] => dateKeys.map((key) => {
       const registrants = registrantsByDate.get(key) || 0;
       const paidForBatch = resolved.filter(
-        (r) => r.resolution.batch && r.resolution.batch.toISOString().slice(0, 10) === key
+        (r) => r.leadGroup === group && r.resolution.batch && r.resolution.batch.toISOString().slice(0, 10) === key
       );
+
+      // Webinar name(s) for this batch, from the Lead values ("Webinar - Momentum" -> "Momentum").
+      // Most common first; only the Webinar group ever has any.
+      const nameCounts = new Map<string, number>();
+      for (const p of paidForBatch) {
+        if (p.webinarName) nameCounts.set(p.webinarName, (nameCounts.get(p.webinarName) || 0) + 1);
+      }
+      const webinarNames = [...nameCounts.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name);
 
       // person -> { bucket, startDate } — startDate is the webinar-offering date they registered
       // under (not "Booked On") for webinar buckets, or their userdetail.createdOn for funnel
@@ -604,33 +650,31 @@ export class FunnelAnalysisService {
         ? parseFloat((daysToPay.reduce((a, b) => a + b, 0) / daysToPay.length).toFixed(1))
         : null;
 
-      // Chennai vs. Non-Chennai split of this webinar's registrants, and how many of each went on
-      // to pay (matched back into paidForBatch by phone/email). Unregistered/unknown-location
-      // registrants aren't shown as their own card, but they are the reason chennai% + non-chennai%
-      // won't always add up to 100.
+      // Chennai vs. Non-Chennai split of this webinar's registrants (registrants can't be split any
+      // other way — the registration sheet is the only source of who signed up for THIS webinar).
       const regsForBatch = registrations.filter(
         (r) => r.webinarDate && r.webinarDate.toISOString().slice(0, 10) === key
       );
-      const paidPhones = new Set(paidForBatch.map((p) => p.phone).filter(Boolean));
-      const paidEmails = new Set(paidForBatch.map((p) => p.email).filter(Boolean));
 
       let chennaiRegistrants = 0;
       let nonChennaiRegistrants = 0;
-      let chennaiPaidCount = 0;
-      let nonChennaiPaidCount = 0;
-
       for (const r of regsForBatch) {
         const location = resolveLocation(r.phone, r.email);
-        if (location === 'unknown') continue;
+        if (location === 'chennai') chennaiRegistrants++;
+        else if (location === 'non-chennai') nonChennaiRegistrants++;
+      }
 
-        const isPaid = (r.phone && paidPhones.has(r.phone)) || (r.email && paidEmails.has(r.email));
-        if (location === 'chennai') {
-          chennaiRegistrants++;
-          if (isPaid) chennaiPaidCount++;
-        } else {
-          nonChennaiRegistrants++;
-          if (isPaid) nonChennaiPaidCount++;
-        }
+      // Location of EVERY paid user credited to this batch — including people who registered for an
+      // earlier webinar, or never registered and came in via a referral code. Their location comes
+      // from userdetail.district / the uploaded location list by phone/email, so it doesn't depend
+      // on having registered for this exact webinar. Paid users with no location on file at all
+      // are the only ones left out, which is why chennai + non-chennai can fall short of `paid`.
+      let chennaiPaidCount = 0;
+      let nonChennaiPaidCount = 0;
+      for (const p of paidForBatch) {
+        const location = resolveLocation(p.phone, p.email);
+        if (location === 'chennai') chennaiPaidCount++;
+        else if (location === 'non-chennai') nonChennaiPaidCount++;
       }
 
       const totalRegsForBatch = regsForBatch.length;
@@ -641,6 +685,7 @@ export class FunnelAnalysisService {
 
       return {
         label: key,
+        webinarNames,
         registrants,
         paid,
         avgDaysToPay,
@@ -655,5 +700,14 @@ export class FunnelAnalysisService {
         nonChennaiPaidCount,
       };
     });
+
+    // Each card has its own Showing filter, so the UI asks for one group at a time; the groups it
+    // didn't ask for come back empty rather than being computed.
+    const wanted = (g: LeadGroup) => !groups || groups.length === 0 || groups.includes(g);
+    return {
+      webinar: wanted('webinar') ? buildForGroup('webinar') : [],
+      organic: wanted('organic') ? buildForGroup('organic') : [],
+      salesteam: wanted('salesteam') ? buildForGroup('salesteam') : [],
+    };
   }
 }

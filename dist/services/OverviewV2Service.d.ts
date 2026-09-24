@@ -15,6 +15,7 @@ export declare class OverviewV2Service {
     getSignupsMonthly(filters: FilterOptions): Promise<any>;
     getLedgerUsageByCohort(filters: FilterOptions, ledgerItems: LedgerSource[]): Promise<any>;
     getActivationRate(monthKeys: string[], type: 'real' | 'paper', dayWindow?: number): Promise<any>;
+    getAvgDaysToPortfolioTrend(monthKeys: string[]): Promise<any>;
     getLiveCapitalRate(monthKeys: string[]): Promise<any>;
     getMonthlyActivePaid(ledgerItems: LedgerSource[]): Promise<any>;
     private computeMonthlyActivePaid;

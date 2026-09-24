@@ -6,10 +6,16 @@ export interface GsHealthRow {
     quarter: string;
     webinarRegisteredCount: number;
     leadFormRegisteredCount: number;
+    expectedRenewalCount: number;
     totalRevenue: number;
     netRevenue: number;
     demoFunnelTotalRevenue: number;
     demoFunnelNetRevenue: number;
+    renewalTotalRevenue: number;
+    renewalNetRevenue: number;
+    renewalCount: number;
+    marketingSpending: number;
+    paymentCompletion: number;
     eventSpent: number;
     webinarAdsSpent: number;
     webinarAdsSpentWithGST: number;
@@ -44,6 +50,7 @@ export declare class GoogleSheetsService {
     private cache;
     private cacheTimestamp;
     private toNumber;
+    private num;
     getMonthlyData(): Promise<GsHealthRow[]>;
 }
 //# sourceMappingURL=GoogleSheetsService.d.ts.map

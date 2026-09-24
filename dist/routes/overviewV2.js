@@ -118,6 +118,17 @@ router.get('/plot/activation-rate', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to fetch activation rate', timestamp: new Date().toISOString() });
     }
 });
+router.get('/plot/avg-days-to-portfolio', async (req, res) => {
+    try {
+        const monthKeys = resolveMonthKeys(req);
+        const data = await service.getAvgDaysToPortfolioTrend(monthKeys);
+        res.json({ success: true, data, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error fetching avg days to portfolio trend:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch avg days to portfolio trend', timestamp: new Date().toISOString() });
+    }
+});
 router.get('/plot/live-capital-rate', async (req, res) => {
     try {
         const monthKeys = resolveMonthKeys(req);

@@ -63,7 +63,11 @@ router.get('/segment3/batch-detail', async (req, res) => {
         const datesParam = req.query.dates;
         const requestedKeys = datesParam ? datesParam.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
         const strictChennai = req.query.strictChennai === 'true';
-        const data = await service.getWebinarBatchDetail(requestedKeys, strictChennai);
+        const groupsParam = req.query.groups;
+        const groups = groupsParam
+            ? groupsParam.split(',').map((s) => s.trim()).filter((s) => ['webinar', 'organic', 'salesteam'].includes(s))
+            : undefined;
+        const data = await service.getWebinarBatchDetail(requestedKeys, strictChennai, groups);
         res.json({ success: true, data, timestamp: new Date().toISOString() });
     }
     catch (error) {
