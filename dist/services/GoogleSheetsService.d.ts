@@ -1,3 +1,10 @@
+export interface MarketingByTool {
+    aisensy: number;
+    periskope: number;
+    exly: number;
+    zoom: number;
+    zohoCrm: number;
+}
 export interface GsHealthRow {
     year: number;
     month: number;
@@ -15,6 +22,9 @@ export interface GsHealthRow {
     renewalNetRevenue: number;
     renewalCount: number;
     marketingSpending: number;
+    marketingByTool: MarketingByTool;
+    marketingUnallocated: number;
+    brokerageProfit: number;
     paymentCompletion: number;
     eventSpent: number;
     webinarAdsSpent: number;
@@ -45,12 +55,23 @@ export interface GsHealthRow {
     netRoas: number;
     combinedTotalRevenue: number;
     combinedNetRevenue: number;
+    totalSpendGross: number;
+    totalSpendNet: number;
+    merGross: number;
+    merNet: number;
+    ltvGross: number;
+    ltvNet: number;
 }
 export declare class GoogleSheetsService {
     private cache;
     private cacheTimestamp;
     private toNumber;
     private num;
+    private tabUrl;
+    private fetchTab;
+    private monthKeyFromDate;
+    private readMarketingByMonth;
+    private readBrokerageByMonth;
     getMonthlyData(): Promise<GsHealthRow[]>;
 }
 //# sourceMappingURL=GoogleSheetsService.d.ts.map

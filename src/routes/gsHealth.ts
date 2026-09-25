@@ -179,6 +179,9 @@ router.get('/key-metrics', async (req: Request, res: Response) => {
     const data = {
       totalRevenue: buildCategory((r) => r.combinedTotalRevenue, 'sum', false),
       revenue: buildCategory((r) => r.combinedNetRevenue, 'sum', false),
+      brokerage: buildCategory((r) => r.brokerageProfit, 'sum', false),
+      merGross: buildCategory((r) => r.merGross, 'avg', false),
+      merNet: buildCategory((r) => r.merNet, 'avg', false),
       cac: buildCategory((r) => r.cac, 'avg', true),
       paidUsers: buildCategory((r) => r.paidUsers, 'sum', false),
       // Spend is shown as separate figures, never summed into one: Webinar ads, Demo Funnel ads
@@ -275,12 +278,17 @@ router.get('/channel-metrics', async (req: Request, res: Response) => {
 // ============ Month-over-month summary (the "Summarize" popup) ============
 // Current month vs the month before it, for the handful of headline numbers, each straight from the
 // sheet's own columns. Anchored the same way as Key Metrics (latest non-empty month, or ?asOfMonth).
-type SummaryFormat = 'currency' | 'number';
-const SUMMARY_METRICS: { key: string; label: string; format: SummaryFormat; lowerIsBetter: boolean; get: (r: GsHealthRow) => number }[] = [
+type SummaryFormat = 'currency' | 'number' | 'ratio';
+const SUMMARY_METRICS: { key: string; label: string; sub?: string; format: SummaryFormat; lowerIsBetter: boolean; get: (r: GsHealthRow) => number }[] = [
   { key: 'grossRevenue', label: 'Gross Revenue', format: 'currency', lowerIsBetter: false, get: (r) => r.combinedTotalRevenue },
+  { key: 'brokerage', label: 'Algo Brokerage Profit', format: 'currency', lowerIsBetter: false, get: (r) => r.brokerageProfit },
   { key: 'webinarAds', label: 'Webinar Ads Spent', format: 'currency', lowerIsBetter: true, get: (r) => r.webinarAdsSpentWithGST },
   { key: 'demoAds', label: 'Demo Funnel Ads Spent', format: 'currency', lowerIsBetter: true, get: (r) => r.leadAdsSpentWithGST },
   { key: 'marketing', label: 'Marketing Spent (incl. UGC)', format: 'currency', lowerIsBetter: true, get: (r) => r.marketingSpending + r.ugcInfluencerCost },
+  // One MER row (gross figures); the Gross / Net switch lives inside its drill-down popup.
+  { key: 'mer', label: 'MER', sub: 'gross · switch to net inside', format: 'ratio', lowerIsBetter: false, get: (r) => r.merGross },
+  // LTV, like MER, shows the gross figure in the table; the Gross / Net switch is inside its drill-down popup.
+  { key: 'ltv', label: 'LTV', sub: 'gross · switch to net inside', format: 'currency', lowerIsBetter: false, get: (r) => r.ltvGross },
   { key: 'cac', label: 'Overall CAC', format: 'currency', lowerIsBetter: true, get: (r) => r.cac },
   { key: 'webinarCpl', label: 'Webinar CPL', format: 'currency', lowerIsBetter: true, get: (r) => r.webinarCPL },
   { key: 'demoCpl', label: 'Demo Funnel CPL', format: 'currency', lowerIsBetter: true, get: (r) => r.demoFunnelCPL },
@@ -307,7 +315,7 @@ router.get('/month-summary', async (req: Request, res: Response) => {
       const prev = previous ? parseFloat(m.get(previous).toFixed(2)) : null;
       const delta = prev === null ? null : parseFloat((cur - prev).toFixed(2));
       const pct = prev === null || prev === 0 ? null : parseFloat((((cur - prev) / Math.abs(prev)) * 100).toFixed(1));
-      return { key: m.key, label: m.label, format: m.format, lowerIsBetter: m.lowerIsBetter, current: cur, previous: prev, delta, pct };
+      return { key: m.key, label: m.label, sub: m.sub || null, format: m.format, lowerIsBetter: m.lowerIsBetter, current: cur, previous: prev, delta, pct };
     });
 
     // Months the popup's dropdown can jump to: every month that has real data, newest first.
@@ -330,6 +338,180 @@ router.get('/month-summary', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching GS Health month summary:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch month summary', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+// ============ Month components (the drill-down popups behind "Marketing Spent" and "MER") ============
+// Everything that goes into one month's revenue and spend, item by item, each with a gross figure
+// (GST-inclusive / as entered) and a net figure (GST-exclusive / as entered). The MER popup lets the
+// user tick items off and recomputes MER from this list; the Marketing popup shows the "marketing"
+// group of it (tool spend + UGC) per product.
+router.get('/month-components', async (req: Request, res: Response) => {
+  try {
+    const allRowsRaw = await sheetsService.getMonthlyData();
+    if (allRowsRaw.length === 0) {
+      res.json({ success: true, data: null, timestamp: new Date().toISOString() } as APIResponse<any>);
+      return;
+    }
+
+    const wanted = req.query.month as string | undefined;
+    const fallback = effectiveRows(allRowsRaw);
+    const r = allRowsRaw.find((x) => x.monthKey === wanted) || fallback[fallback.length - 1];
+    const round2 = (n: number) => parseFloat(n.toFixed(2));
+
+    const revenue = [
+      { key: 'webinarRevenue', label: 'Webinar revenue', gross: r.totalRevenue, net: r.netRevenue },
+      { key: 'demoRevenue', label: 'Demo Funnel revenue', gross: r.demoFunnelTotalRevenue, net: r.demoFunnelNetRevenue },
+      { key: 'renewalRevenue', label: 'Renewal revenue', gross: r.renewalTotalRevenue, net: r.renewalNetRevenue },
+      { key: 'brokerage', label: 'Algo brokerage profit', gross: r.brokerageProfit, net: r.brokerageProfit },
+    ].map((i) => ({ ...i, gross: round2(i.gross), net: round2(i.net) }));
+
+    const tools = r.marketingByTool;
+    const spend: { key: string; label: string; group: 'ads' | 'marketing'; gross: number; net: number }[] = [
+      { key: 'webinarAds', label: 'Webinar ads', group: 'ads', gross: r.webinarAdsSpentWithGST, net: r.webinarAdsSpent },
+      { key: 'demoAds', label: 'Demo Funnel ads', group: 'ads', gross: r.leadAdsSpentWithGST, net: r.leadAdsSpent },
+      { key: 'aisensy', label: 'AiSensy', group: 'marketing', gross: tools.aisensy, net: tools.aisensy },
+      { key: 'periskope', label: 'Periskope', group: 'marketing', gross: tools.periskope, net: tools.periskope },
+      { key: 'exly', label: 'Exly', group: 'marketing', gross: tools.exly, net: tools.exly },
+      { key: 'zoom', label: 'Zoom', group: 'marketing', gross: tools.zoom, net: tools.zoom },
+      { key: 'zohoCrm', label: 'Zoho CRM', group: 'marketing', gross: tools.zohoCrm, net: tools.zohoCrm },
+    ];
+    // Only appears when the Marketing tab has nothing for this month but the monthly sheet's own
+    // Marketing Spending column does.
+    if (r.marketingUnallocated > 0) {
+      spend.push({ key: 'marketingOther', label: 'Other marketing (monthly sheet)', group: 'marketing', gross: r.marketingUnallocated, net: r.marketingUnallocated });
+    }
+    spend.push({ key: 'ugc', label: 'UGC & Influencer', group: 'marketing', gross: r.ugcInfluencerCost, net: r.ugcInfluencerCost });
+
+    // People the LTV is spread over. Renewed users are listed too so they can be ticked in, but the default
+    // (and the dashboard's LTV) counts only NEW paid customers.
+    const customers = [
+      { key: 'webinarPaid', label: 'Webinar paid users', value: r.webinarConvertedCount },
+      { key: 'demoPaid', label: 'Demo Funnel paid users', value: r.demoConvertedCount },
+      { key: 'renewedUsers', label: 'Renewed users', value: r.renewalCount },
+    ];
+
+    res.json({
+      success: true,
+      data: {
+        monthKey: r.monthKey,
+        monthLabel: r.monthLabel,
+        customers,
+        ltv: { gross: r.ltvGross, net: r.ltvNet },
+        revenue,
+        spend: spend.map((i) => ({ ...i, gross: round2(i.gross), net: round2(i.net) })),
+        mer: { gross: r.merGross, net: r.merNet },
+      },
+      timestamp: new Date().toISOString(),
+    } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching GS Health month components:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch month components', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+// ============ Chart report ============
+// Every metric for every month, so the Chart Report popup can plot any one of them month by month or
+// as a running total. `additive` metrics (revenue, spend, user counts) can be accumulated; ratios and
+// per-unit costs (MER, CAC, CPL, ROAS) cannot, so the popup only offers "Monthly" for those. For
+// non-additive metrics a 0 means "not tracked that month", so it is sent as null to leave a gap in
+// the line instead of dropping to zero.
+type ChartFormat = 'currency' | 'number' | 'ratio';
+interface ChartMetricDef {
+  key: string;
+  label: string;
+  group: 'Revenue' | 'Spend' | 'Efficiency' | 'Users & Leads';
+  format: ChartFormat;
+  additive: boolean;
+  lowerIsBetter: boolean;
+  get: (r: GsHealthRow) => number;
+}
+const money = (key: string, label: string, group: 'Revenue' | 'Spend', get: (r: GsHealthRow) => number): ChartMetricDef =>
+  ({ key, label, group, format: 'currency', additive: true, lowerIsBetter: group === 'Spend', get });
+const perUnit = (key: string, label: string, get: (r: GsHealthRow) => number): ChartMetricDef =>
+  ({ key, label, group: 'Efficiency', format: 'currency', additive: false, lowerIsBetter: true, get });
+const ratio = (key: string, label: string, get: (r: GsHealthRow) => number): ChartMetricDef =>
+  ({ key, label, group: 'Efficiency', format: 'ratio', additive: false, lowerIsBetter: false, get });
+const unitValue = (key: string, label: string, get: (r: GsHealthRow) => number): ChartMetricDef =>
+  ({ key, label, group: 'Efficiency', format: 'currency', additive: false, lowerIsBetter: false, get });
+const count = (key: string, label: string, get: (r: GsHealthRow) => number): ChartMetricDef =>
+  ({ key, label, group: 'Users & Leads', format: 'number', additive: true, lowerIsBetter: false, get });
+
+const CHART_METRICS: ChartMetricDef[] = [
+  money('grossRevenue', 'Gross Revenue (all funnels)', 'Revenue', (r) => r.combinedTotalRevenue),
+  money('netRevenue', 'Net Revenue (all funnels)', 'Revenue', (r) => r.combinedNetRevenue),
+  money('webinarRevenue', 'Webinar Revenue (gross)', 'Revenue', (r) => r.totalRevenue),
+  money('webinarNetRevenue', 'Webinar Revenue (net)', 'Revenue', (r) => r.netRevenue),
+  money('demoRevenue', 'Demo Funnel Revenue (gross)', 'Revenue', (r) => r.demoFunnelTotalRevenue),
+  money('demoNetRevenue', 'Demo Funnel Revenue (net)', 'Revenue', (r) => r.demoFunnelNetRevenue),
+  money('renewalRevenue', 'Renewal Revenue (gross)', 'Revenue', (r) => r.renewalTotalRevenue),
+  money('renewalNetRevenue', 'Renewal Revenue (net)', 'Revenue', (r) => r.renewalNetRevenue),
+  money('brokerage', 'Algo Brokerage Profit', 'Revenue', (r) => r.brokerageProfit),
+
+  money('totalSpend', 'Total Spend (ads with GST + marketing + UGC)', 'Spend', (r) => r.totalSpendGross),
+  money('webinarAds', 'Webinar Ads (with GST)', 'Spend', (r) => r.webinarAdsSpentWithGST),
+  money('demoAds', 'Demo Funnel Ads (with GST)', 'Spend', (r) => r.leadAdsSpentWithGST),
+  money('marketing', 'Marketing Spent (tools + UGC)', 'Spend', (r) => r.marketingSpending + r.ugcInfluencerCost),
+  money('aisensy', 'AiSensy', 'Spend', (r) => r.marketingByTool.aisensy),
+  money('periskope', 'Periskope', 'Spend', (r) => r.marketingByTool.periskope),
+  money('exly', 'Exly', 'Spend', (r) => r.marketingByTool.exly),
+  money('zoom', 'Zoom', 'Spend', (r) => r.marketingByTool.zoom),
+  money('zohoCrm', 'Zoho CRM', 'Spend', (r) => r.marketingByTool.zohoCrm),
+  money('ugc', 'UGC & Influencer', 'Spend', (r) => r.ugcInfluencerCost),
+
+  ratio('merGross', 'MER (Gross)', (r) => r.merGross),
+  ratio('merNet', 'MER (Net)', (r) => r.merNet),
+  unitValue('ltvGross', 'LTV (Gross)', (r) => r.ltvGross),
+  unitValue('ltvNet', 'LTV (Net)', (r) => r.ltvNet),
+  perUnit('cac', 'Overall CAC', (r) => r.cac),
+  perUnit('webinarCac', 'Webinar CAC', (r) => r.webinarCAC),
+  perUnit('leadCac', 'Demo Funnel CAC', (r) => r.leadFunnelCAC),
+  perUnit('webinarCpl', 'Webinar CPL', (r) => r.webinarCPL),
+  perUnit('demoCpl', 'Demo Funnel CPL', (r) => r.demoFunnelCPL),
+  ratio('webinarRoas', 'Webinar Net ROAS', (r) => r.webinarNetROAS),
+  ratio('demoRoas', 'Demo Funnel Net ROAS', (r) => r.demoFunnelNetROAS),
+  ratio('cacRatio', 'CAC Ratio', (r) => r.cacRatio),
+
+  count('webinarRegistered', 'Webinar Registered', (r) => r.webinarRegisteredCount),
+  count('demoLeads', 'Demo Funnel Leads (Lead Form)', (r) => r.leadFormRegisteredCount),
+  count('paidUsers', 'Paid Users (Webinar + Demo)', (r) => r.paidUsers),
+  count('webinarPaid', 'Webinar Paid Users', (r) => r.webinarConvertedCount),
+  count('demoPaid', 'Demo Funnel Paid Users', (r) => r.demoConvertedCount),
+  count('expectedRenewals', 'Expected Renewals', (r) => r.expectedRenewalCount),
+  count('renewedUsers', 'Renewed Users', (r) => r.renewalCount),
+];
+
+router.get('/chart-data', async (_req: Request, res: Response) => {
+  try {
+    const allRowsRaw = await sheetsService.getMonthlyData();
+    if (allRowsRaw.length === 0) {
+      res.json({ success: true, data: null, timestamp: new Date().toISOString() } as APIResponse<any>);
+      return;
+    }
+
+    // Same rule as Key Metrics: a still-empty placeholder month at the end is not plotted.
+    const rows = effectiveRows(allRowsRaw);
+
+    const data = {
+      months: rows.map((r) => ({ key: r.monthKey, label: r.monthLabel, year: r.year })),
+      metrics: CHART_METRICS.map((m) => ({
+        key: m.key,
+        label: m.label,
+        group: m.group,
+        format: m.format,
+        additive: m.additive,
+        lowerIsBetter: m.lowerIsBetter,
+        values: rows.map((r) => {
+          const v = m.get(r);
+          return !m.additive && v === 0 ? null : parseFloat(v.toFixed(2));
+        }),
+      })),
+    };
+
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching GS Health chart data:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch chart data', timestamp: new Date().toISOString() } as APIResponse<null>);
   }
 });
 
