@@ -23,7 +23,7 @@ steps:
       - $_PLATFORM
       - '--allow-unauthenticated'
       - '--set-secrets'
-      - 'MONGODB_URI=greensigma-dashboard-mongo-uri:latest,JWT_SECRET=greensigma-dashboard-jwt-secret:latest,INITIAL_OWNER_EMAIL=greensigma-dashboard-owner-email:latest,INITIAL_OWNER_PASSWORD=greensigma-dashboard-owner-password:latest'
+      - 'MONGODB_URI=greensigma-dashboard-mongo-uri:latest,JWT_SECRET=greensigma-dashboard-jwt-secret:latest,INITIAL_OWNER_EMAIL=greensigma-dashboard-owner-email:latest,INITIAL_OWNER_PASSWORD=greensigma-dashboard-owner-password:latest,ZOHO_CLIENT_ID=greensigma-dashboard-zoho-client-id:latest,ZOHO_CLIENT_SECRET=greensigma-dashboard-zoho-client-secret:latest,ZOHO_REFRESH_TOKEN=greensigma-dashboard-zoho-refresh-token:latest'
 timeout: 1200s
 images:
   - '$_AR_HOSTNAME/$PROJECT_ID/greensigma-dashboard/greensigma-dashboard-backend:$COMMIT_SHA'

@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { DashboardUserRepository } from '../repository/DashboardUserRepository';
 import { RolePermissionRepository } from '../repository/RolePermissionRepository';
-import { DEFAULT_ROLE_PERMISSIONS, ROLES, Role } from '../config/permissions';
+import { DEFAULT_ROLE_PERMISSIONS, PERMISSION_KEYS, ROLES, Role } from '../config/permissions';
 import { DashboardUser } from '../types';
 import { getDatabase } from '../config/database';
 
@@ -54,8 +54,18 @@ export class AuthService {
   async ensureSeeded(): Promise<void> {
     for (const role of ROLES) {
       const existing = await this.roleRepo.getByRole(role);
+      const isAlwaysEverything = DEFAULT_ROLE_PERMISSIONS[role].length === PERMISSION_KEYS.length;
+
       if (!existing) {
         await this.roleRepo.setPermissions(role, DEFAULT_ROLE_PERMISSIONS[role]);
+      } else if (isAlwaysEverything && existing.permissions.length !== PERMISSION_KEYS.length) {
+        // owner/super_admin/manager are DEFINED as "every permission that exists" (DEFAULT_ROLE_PERMISSIONS
+        // spreads the full catalog for them) — never a curated subset an Owner deliberately trimmed down.
+        // Without this, a role doc seeded before some later tab was added stays stuck missing it forever,
+        // since the `!existing` branch above only ever fires once. product_manager/sales_team are real
+        // curated subsets (an Owner may have edited them via the admin UI), so they're deliberately left
+        // alone here — adding a brand-new tab to THEIR defaults still needs a one-time manual top-up.
+        await this.roleRepo.setPermissions(role, PERMISSION_KEYS);
       }
     }
 

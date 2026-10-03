@@ -18,6 +18,7 @@ import funnelAnalysisRoutes from './routes/funnelAnalysis';
 import usageAnalysisRoutes from './routes/usageAnalysis';
 import activationTrackerRoutes from './routes/activationTracker';
 import emandateTrackerRoutes from './routes/emandateTracker';
+import salesCallsRoutes from './routes/salesCalls';
 
 dotenv.config();
 
@@ -59,6 +60,7 @@ app.use('/api/funnel-analysis', requireAuth, funnelAnalysisRoutes);
 app.use('/api/usage-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/usage-analysis']), usageAnalysisRoutes);
 app.use('/api/activation-tracker', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/activation-tracker']), activationTrackerRoutes);
 app.use('/api/emandate-tracker', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/emandate-tracker']), emandateTrackerRoutes);
+app.use('/api/sales-calls', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/sales-calls']), salesCallsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

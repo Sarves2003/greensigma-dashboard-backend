@@ -75,6 +75,9 @@ export const PERMISSIONS: PermissionDef[] = [
 
   { key: 'tab:emandate-tracker', label: 'Emandate', type: 'tab' },
   { key: 'card:emandate-tracker:main', label: 'Emandate Table', type: 'card', tabKey: 'tab:emandate-tracker' },
+
+  { key: 'tab:sales-calls', label: 'Sales Calls', type: 'tab' },
+  { key: 'card:sales-calls:main', label: 'Call Performance Table', type: 'card', tabKey: 'tab:sales-calls' },
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
@@ -99,6 +102,7 @@ export const ROUTE_PERMISSION_MAP: Record<string, string> = {
   '/api/usage-analysis': 'tab:usage-analysis',
   '/api/activation-tracker': 'tab:activation-tracker',
   '/api/emandate-tracker': 'tab:emandate-tracker',
+  '/api/sales-calls': 'tab:sales-calls',
 };
 
 // Default permission grants per role. Seeded into dashboard_role_permissions on
@@ -146,5 +150,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:activation-tracker:main',
     'tab:emandate-tracker',
     'card:emandate-tracker:main',
+    'tab:sales-calls',
+    'card:sales-calls:main',
   ],
 };

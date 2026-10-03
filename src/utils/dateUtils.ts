@@ -20,6 +20,11 @@ export function getDateRange(period: string): { startDate: Date; endDate: Date }
       const sevenDaysAgo = new Date(today);
       sevenDaysAgo.setUTCDate(sevenDaysAgo.getUTCDate() - 7);
       return { startDate: sevenDaysAgo, endDate: tomorrow };
+    case 'last15days':
+    case '15days':
+      const fifteenDaysAgo = new Date(today);
+      fifteenDaysAgo.setUTCDate(fifteenDaysAgo.getUTCDate() - 15);
+      return { startDate: fifteenDaysAgo, endDate: tomorrow };
     case 'last30days':
     case '30days':
       const thirtyDaysAgo = new Date(today);

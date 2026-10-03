@@ -39,8 +39,18 @@ class AuthService {
     async ensureSeeded() {
         for (const role of permissions_1.ROLES) {
             const existing = await this.roleRepo.getByRole(role);
+            const isAlwaysEverything = permissions_1.DEFAULT_ROLE_PERMISSIONS[role].length === permissions_1.PERMISSION_KEYS.length;
             if (!existing) {
                 await this.roleRepo.setPermissions(role, permissions_1.DEFAULT_ROLE_PERMISSIONS[role]);
+            }
+            else if (isAlwaysEverything && existing.permissions.length !== permissions_1.PERMISSION_KEYS.length) {
+                // owner/super_admin/manager are DEFINED as "every permission that exists" (DEFAULT_ROLE_PERMISSIONS
+                // spreads the full catalog for them) — never a curated subset an Owner deliberately trimmed down.
+                // Without this, a role doc seeded before some later tab was added stays stuck missing it forever,
+                // since the `!existing` branch above only ever fires once. product_manager/sales_team are real
+                // curated subsets (an Owner may have edited them via the admin UI), so they're deliberately left
+                // alone here — adding a brand-new tab to THEIR defaults still needs a one-time manual top-up.
+                await this.roleRepo.setPermissions(role, permissions_1.PERMISSION_KEYS);
             }
         }
         const ownerEmail = process.env.INITIAL_OWNER_EMAIL;
