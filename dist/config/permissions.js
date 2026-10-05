@@ -60,6 +60,9 @@ exports.PERMISSIONS = [
     { key: 'card:emandate-tracker:main', label: 'Emandate Table', type: 'card', tabKey: 'tab:emandate-tracker' },
     { key: 'tab:sales-calls', label: 'Sales Calls', type: 'tab' },
     { key: 'card:sales-calls:main', label: 'Call Performance Table', type: 'card', tabKey: 'tab:sales-calls' },
+    { key: 'tab:webinar-analysis', label: 'Webinar Analysis', type: 'tab' },
+    { key: 'card:webinar-analysis:main', label: 'Webinar Report & Tables', type: 'card', tabKey: 'tab:webinar-analysis' },
+    { key: 'card:webinar-analysis:upload', label: 'Upload Webinar Data', type: 'card', tabKey: 'tab:webinar-analysis' },
 ];
 exports.PERMISSION_KEYS = exports.PERMISSIONS.map((p) => p.key);
 exports.TAB_KEYS = exports.PERMISSIONS.filter((p) => p.type === 'tab').map((p) => p.key);
@@ -82,6 +85,7 @@ exports.ROUTE_PERMISSION_MAP = {
     '/api/activation-tracker': 'tab:activation-tracker',
     '/api/emandate-tracker': 'tab:emandate-tracker',
     '/api/sales-calls': 'tab:sales-calls',
+    '/api/webinar-analysis': 'tab:webinar-analysis',
 };
 // Default permission grants per role. Seeded into dashboard_role_permissions on
 // first boot; editable afterward by the Owner through the admin UI.
@@ -107,6 +111,9 @@ exports.DEFAULT_ROLE_PERMISSIONS = {
         'card:activation-tracker:main',
         'tab:emandate-tracker',
         'card:emandate-tracker:main',
+        'tab:webinar-analysis',
+        'card:webinar-analysis:main',
+        'card:webinar-analysis:upload',
     ],
     sales_team: [
         'tab:funnel-analysis',
@@ -130,6 +137,8 @@ exports.DEFAULT_ROLE_PERMISSIONS = {
         'card:emandate-tracker:main',
         'tab:sales-calls',
         'card:sales-calls:main',
+        'tab:webinar-analysis',
+        'card:webinar-analysis:main',
     ],
 };
 //# sourceMappingURL=permissions.js.map
