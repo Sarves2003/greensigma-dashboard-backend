@@ -23,6 +23,28 @@ function resolveSort(req) {
     const sortDir = req.query.sortDir === 'asc' ? 'asc' : 'desc';
     return { sortBy, sortDir };
 }
+// Each selected batch tag is percent-encoded individually by the frontend then comma-joined, since
+// a tag itself never contains a comma but could contain other characters a raw query string wouldn't
+// survive untouched.
+function resolveBatchFilter(req) {
+    const raw = req.query.batches;
+    if (typeof raw !== 'string' || !raw)
+        return undefined;
+    const tags = raw.split(',').map((t) => decodeURIComponent(t)).filter(Boolean);
+    return tags.length > 0 ? tags : undefined;
+}
+function resolveSearch(req) {
+    return typeof req.query.search === 'string' && req.query.search.trim() ? req.query.search : undefined;
+}
+// Download format: 'raw' is every column as shown in the table (the long-standing default); 'aisensy'
+// is a Name/Mobile Number/Tags-only CSV shaped for AiSensy's bulk WhatsApp contact import, with the
+// tag text supplied by whoever's downloading.
+function resolveFormat(req) {
+    return req.query.format === 'aisensy' ? 'aisensy' : 'raw';
+}
+function resolveTag(req) {
+    return typeof req.query.tag === 'string' ? req.query.tag.trim() : '';
+}
 router.post('/upload', upload.fields([{ name: 'participantsFile', maxCount: 1 }, { name: 'chatFile', maxCount: 1 }]), async (req, res) => {
     try {
         const files = req.files;
@@ -60,11 +82,21 @@ router.get('/report/:id', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to build the webinar report', timestamp: new Date().toISOString() });
     }
 });
+router.get('/batch-options/:id', async (req, res) => {
+    try {
+        const data = await service.getBatchOptions(req.params.id);
+        res.json({ success: true, data, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error fetching batch options:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch batch options', timestamp: new Date().toISOString() });
+    }
+});
 router.get('/main/:id', async (req, res) => {
     try {
         const { page, pageSize } = resolvePage(req);
         const { sortBy, sortDir } = resolveSort(req);
-        const data = await service.getMainTable(req.params.id, resolveThreshold(req), page, pageSize, sortBy, sortDir);
+        const data = await service.getMainTable(req.params.id, resolveThreshold(req), page, pageSize, sortBy, sortDir, resolveBatchFilter(req), resolveSearch(req));
         res.json({ success: true, data, timestamp: new Date().toISOString() });
     }
     catch (error) {
@@ -76,7 +108,7 @@ router.get('/not-joined/:id', async (req, res) => {
     try {
         const { page, pageSize } = resolvePage(req);
         const { sortBy, sortDir } = resolveSort(req);
-        const data = await service.getNotJoinedTable(req.params.id, resolveThreshold(req), page, pageSize, sortBy, sortDir);
+        const data = await service.getNotJoinedTable(req.params.id, resolveThreshold(req), page, pageSize, sortBy, sortDir, resolveBatchFilter(req), resolveSearch(req));
         res.json({ success: true, data, timestamp: new Date().toISOString() });
     }
     catch (error) {
@@ -87,7 +119,7 @@ router.get('/not-joined/:id', async (req, res) => {
 router.get('/main/:id/download', async (req, res) => {
     try {
         const { sortBy, sortDir } = resolveSort(req);
-        const csv = await service.downloadMainCsv(req.params.id, resolveThreshold(req), sortBy, sortDir);
+        const csv = await service.downloadMainCsv(req.params.id, resolveThreshold(req), sortBy, sortDir, resolveBatchFilter(req), resolveSearch(req), resolveFormat(req), resolveTag(req));
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="main-${req.params.id}.csv"`);
         res.send(csv);
@@ -100,7 +132,7 @@ router.get('/main/:id/download', async (req, res) => {
 router.get('/not-joined/:id/download', async (req, res) => {
     try {
         const { sortBy, sortDir } = resolveSort(req);
-        const csv = await service.downloadNotJoinedCsv(req.params.id, resolveThreshold(req), sortBy, sortDir);
+        const csv = await service.downloadNotJoinedCsv(req.params.id, resolveThreshold(req), sortBy, sortDir, resolveBatchFilter(req), resolveSearch(req), resolveFormat(req), resolveTag(req));
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="not-joined-${req.params.id}.csv"`);
         res.send(csv);
@@ -114,7 +146,7 @@ router.get('/not-registered/:id', async (req, res) => {
     try {
         const { page, pageSize } = resolvePage(req);
         const { sortBy, sortDir } = resolveSort(req);
-        const data = await service.getNotRegisteredTable(req.params.id, page, pageSize, sortBy, sortDir);
+        const data = await service.getNotRegisteredTable(req.params.id, page, pageSize, sortBy, sortDir, resolveSearch(req));
         res.json({ success: true, data, timestamp: new Date().toISOString() });
     }
     catch (error) {
@@ -125,7 +157,7 @@ router.get('/not-registered/:id', async (req, res) => {
 router.get('/not-registered/:id/download', async (req, res) => {
     try {
         const { sortBy, sortDir } = resolveSort(req);
-        const csv = await service.downloadNotRegisteredCsv(req.params.id, sortBy, sortDir);
+        const csv = await service.downloadNotRegisteredCsv(req.params.id, sortBy, sortDir, resolveSearch(req), resolveFormat(req), resolveTag(req));
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="not-registered-${req.params.id}.csv"`);
         res.send(csv);
@@ -152,7 +184,7 @@ router.get('/keyword/:id/download', async (req, res) => {
     try {
         const { sortBy, sortDir } = resolveSort(req);
         const keyword = typeof req.query.keyword === 'string' ? req.query.keyword : '';
-        const csv = await service.downloadKeywordCsv(req.params.id, keyword, sortBy, sortDir);
+        const csv = await service.downloadKeywordCsv(req.params.id, keyword, sortBy, sortDir, resolveFormat(req), resolveTag(req));
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="keyword-${req.params.id}.csv"`);
         res.send(csv);
@@ -160,6 +192,16 @@ router.get('/keyword/:id/download', async (req, res) => {
     catch (error) {
         console.error('Error downloading keyword CSV:', error);
         res.status(500).json({ success: false, error: 'Failed to generate the CSV', timestamp: new Date().toISOString() });
+    }
+});
+router.get('/chat-people/:id', async (req, res) => {
+    try {
+        const data = await service.getChatPeople(req.params.id);
+        res.json({ success: true, data, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error fetching chat people:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch chat people', timestamp: new Date().toISOString() });
     }
 });
 router.get('/attendee/:id/:email', async (req, res) => {

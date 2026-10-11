@@ -2,6 +2,7 @@ import axios from 'axios';
 import { parse } from 'csv-parse/sync';
 import { ObjectId } from 'mongodb';
 import { getDatabase } from '../config/database';
+import { FunnelAnalysisService } from './FunnelAnalysisService';
 
 const WEBINAR_REGISTRATIONS_CSV_URL =
   process.env.WEBINAR_REGISTRATIONS_CSV_URL ||
@@ -16,11 +17,6 @@ const COLLECTION = 'webinar_analysis_batches';
 
 const TRIBE_TYPES = new Set(['Tribe', 'TribeYearly']);
 
-// Self-reported in the chat during the live Razorpay-link push ("paid", "Payment done R STALIN",
-// "already paid Rs.5000", "Please confirm my payment"). Not an authoritative payment record — just
-// the best signal available minutes after a webinar ends, before Mongo/the sheet catch up. Shown to
-// the viewer as the matched quote + timestamp so a human makes the final call, not hidden as fact.
-const PAID_CHAT_PATTERNS = [/\bpaid\b/i, /payment\s*(done|success|successful|successfully)/i, /confirm(ed)?\s*(my\s*)?payment/i, /made\s*(the\s*)?payment/i];
 
 const MONTH_MAP: Record<string, number> = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
@@ -101,11 +97,33 @@ function dateOnly(d: Date): Date {
   return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 }
 
+function ordinalSuffix(day: number): string {
+  return day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th';
+}
+
 function ordinalLabel(d: Date): string {
   const day = d.getUTCDate();
   const month = d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
-  const suffix = day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th';
-  return `${day}${suffix} ${month}`;
+  return `${day}${ordinalSuffix(day)} ${month}`;
+}
+
+// Same as ordinalLabel but with the year — used for anything that can span multiple years (a
+// person's registration/payment history), where dropping the year (fine for "which webinar report
+// am I currently looking at") would make two different years' batches look identical.
+function ordinalLabelWithYear(d: Date): string {
+  const day = d.getUTCDate();
+  const month = d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+  const year = d.getUTCFullYear();
+  return `${day}${ordinalSuffix(day)} ${month} ${year}`;
+}
+
+// "Momentum Investing Webinar - 20th JUNE 2026" -> "Momentum". Strips the date suffix and the
+// generic "Investing"/"Webinar" filler words, keeping whatever's left as the short topic name
+// (e.g. "Swing Trading Webinar - ..." -> "Swing Trading", not just "Swing").
+function shortOfferingTopic(offering: string): string {
+  const topicPart = (offering || '').split(/\s[-–—]\s/)[0] || offering || '';
+  const cleaned = topicPart.replace(/\b(investing|webinar)\b/gi, '').replace(/\s+/g, ' ').trim();
+  return cleaned || topicPart.trim() || 'Webinar';
 }
 
 // Classic sweep-line over every join/leave segment (across every attendee, regardless of total
@@ -135,6 +153,35 @@ function computePeakConcurrency(attendees: StoredAttendee[]): { count: number; a
     }
   }
   return { count: peak, atTime: new Date(peakTime) };
+}
+
+// A naive sum of each session segment's own "Duration (minutes)" overstates total attendance
+// whenever two segments overlap in real wall-clock time — which happens routinely (joining from a
+// laptop and a phone at once for audio, a second browser tab, a brief dual-session during a
+// reconnect). Confirmed from real data: every inflated total (e.g. 7h22m inside a 4h51m session)
+// belonged to someone with an unusually high rejoin count, exactly what overlapping segments would
+// produce. Fixed by merging overlapping/adjacent intervals and summing only the merged, disjoint
+// duration — the per-person equivalent of the sweep-line above, so the result can never exceed the
+// true wall-clock time between their first join and last leave.
+function mergedAttendanceMinutes(sessions: SessionSeg[]): number {
+  if (sessions.length === 0) return 0;
+  const intervals = sessions.map((s) => ({ start: s.joinTime.getTime(), end: s.leaveTime.getTime() })).sort((a, b) => a.start - b.start);
+
+  let totalMs = 0;
+  let curStart = intervals[0].start;
+  let curEnd = intervals[0].end;
+  for (let i = 1; i < intervals.length; i++) {
+    const seg = intervals[i];
+    if (seg.start <= curEnd) {
+      curEnd = Math.max(curEnd, seg.end);
+    } else {
+      totalMs += curEnd - curStart;
+      curStart = seg.start;
+      curEnd = seg.end;
+    }
+  }
+  totalMs += curEnd - curStart;
+  return totalMs / 60000;
 }
 
 // Mirrors EmandateTrackerService's classifyPaymentStatus: the sheet only carries anyone who has
@@ -182,6 +229,7 @@ interface RegistrationRow {
   name: string;
   phone: string;
   email: string;
+  offering: string;
   webinarDate: Date | null;
 }
 
@@ -208,6 +256,28 @@ export interface WebinarSummary {
   attendeeCount: number;
 }
 
+// The 9 engagement metrics, computed independently for each of the 4 mutually-exclusive segments
+// below — every number here (attended threshold, chats, peak concurrency, stay-till cutoffs) is
+// scoped to that segment's own members only, not the whole webinar.
+export interface SegmentReport {
+  totalRegistered: number;
+  attended: CountPct;
+  totalChats: number;
+  avgAttendedDurationMin: number | null;
+  avgRejoinsAttended: number | null;
+  peakConcurrent: { count: number; atTime: string | null };
+  stayedTillMiddle: CountPct;
+  stayedTillEnd2hr: CountPct | null;
+  stayedTill150Min: CountPct | null;
+  stayedTill180Min: CountPct | null;
+  conversions: { count: number; avgAttendedMin: number | null }; // Full Paid sheet row dated to THIS webinar's own date — sheet-confirmed only, never a chat guess
+  // Only populated for the "From Previous Webinar (Not Paid)" segment — how many of its members,
+  // whose EARLIEST funnel registration was for an earlier webinar, also show a registration row for
+  // THIS exact webinar (i.e. they registered again rather than just resurfacing to attend). null
+  // for every other segment, where the concept doesn't apply.
+  reRegisteredToday: CountPct | null;
+}
+
 export interface WebinarReport {
   webinar: {
     id: string;
@@ -221,27 +291,38 @@ export interface WebinarReport {
   attendedThresholdMin: number;
   cards: {
     totalRegistered: number;
-    registeredViaFunnel: CountPct;
-    fromPreviousWebinar: CountPct; // registration-sheet match on an EARLIER date, excluding previously-paid people
-    previouslyPaid: CountPct;
-    organic: CountPct; // total - (registeredViaFunnel + fromPreviousWebinar + previouslyPaid)
-    attended: CountPct;
-    totalChats: number;
-    avgAttendedDurationMin: number | null; // avg totalMin among the "attended" (>= threshold) population only
-    avgRejoinsAttended: number | null; // avg rejoin count among the same "attended" population
-    peakConcurrent: { count: number; atTime: string | null }; // most people in the room at once, and when
-    stayedTillMiddle: CountPct; // of the attended population
-    stayedTillEnd2hr: CountPct | null; // of the attended population; null when the session ran under 2 hours
+    // Every attendee falls into EXACTLY ONE of these four, checked in this priority order so the
+    // four segments are a strict partition of totalRegistered (no double-counting, nothing missed):
+    //   1. alreadyPaid       — previouslyPaid true (Tribe/TribeYearly, or a sheet row dated before this session)
+    //   2. previousNotPaid   — not already paid, has a registration-sheet row for an EARLIER webinar date
+    //                          (their EARLIEST registration wins even if they also re-registered for today)
+    //   3. current           — not already paid, not previousNotPaid, has a registration row for THIS webinar's date
+    //   4. organic           — everyone left over (no tracked registration, not already paid)
+    segments: {
+      current: SegmentReport;
+      previousNotPaid: SegmentReport;
+      alreadyPaid: SegmentReport;
+      organic: SegmentReport;
+    };
   };
   registrationDataAvailable: boolean; // false => no funnel-registration rows exist for this date at all (pre 3-Oct-2026 cutoff)
+  // Reconciliation against the Funnel Analysis tab's own per-batch "paid" figure for this exact
+  // webinar date (Lead-agnostic: Webinar + Organic + Sales Team sheet rows combined, resolved via
+  // FunnelAnalysisService's own fuzzy batch-date matching) — the trusted, independently-computed
+  // total. It can run ahead of the sum of the four Conversions cards above, because that total
+  // includes anyone who paid citing this webinar's date even if they never actually joined this
+  // Zoom session (the Conversions cards are attendee-scoped by definition and can never show them).
+  // null when this webinar's date isn't in the admin-managed master batch date list yet.
+  funnelPaidTotal: number | null;
 }
 
 export interface MainRow {
   email: string;
   name: string;
   number: string;
-  batchLabel: string;
+  registeredBatches: string | null;
   paid5k: boolean;
+  paidOnBatch: string | null;
   totalMin: number;
   rejoins: number;
   chatCount: number;
@@ -252,8 +333,9 @@ export interface NotJoinedRow {
   email: string;
   name: string;
   number: string;
-  batchLabel: string;
+  registeredBatches: string | null;
   paid5k: boolean;
+  paidOnBatch: string | null;
   signedUp: boolean;
 }
 
@@ -270,6 +352,15 @@ export interface KeywordRow {
   name: string;
   number: string;
   timeIso: string; // wall-clock instant the keyword was used; frontend renders with the Asia/Kolkata DatePipe timezone
+  msg: string; // the exact chat line that matched, case preserved, so the viewer can see precisely what was said
+}
+
+export interface ChatPersonRow {
+  email: string;
+  name: string;
+  number: string;
+  signedUp: boolean;
+  chatCount: number;
 }
 
 export interface AttendeeDetail {
@@ -280,7 +371,8 @@ export interface AttendeeDetail {
   previouslyPaid: boolean;
   previouslyPaidOn: string | null;
   paid5k: boolean;
-  paidEvidence: { msg: string; wallClock: string | null } | null;
+  paidOnBatch: string | null;
+  registeredBatches: string | null;
   totalMin: number;
   sessions: { joinTime: string; leaveTime: string; durationMin: number }[];
   chat: { wallClock: string | null; msg: string }[];
@@ -304,14 +396,21 @@ interface EnrichedAttendee {
   signedUp: boolean;
   previouslyPaid: boolean;
   previouslyPaidOn: string | null;
-  paid5kThisSession: boolean;
-  paidEvidence: { msg: string; elapsedSec: number } | null;
+  paidToday: boolean; // Full Paid sheet row dated to THIS webinar's own date — sheet-confirmed only
+  paid5k: boolean;
   signedUpBeforeSession: boolean;
+  registeredBatches: string | null;
+  paidOnBatch: string | null;
+  // Every webinar date this person registered for via the funnel sheet, matched by email OR phone
+  // (same matching `registeredBatches` is built from) — used to bucket them into Current/Previous
+  // by their EARLIEST registration, not just whichever one happens to be today's.
+  registeredDates: Date[];
 }
 
 export class WebinarAnalysisService {
   private registrationCache: { data: RegistrationRow[]; ts: number } | null = null;
   private paidCache: { data: PaidSheetRow[]; ts: number } | null = null;
+  private funnelSvc = new FunnelAnalysisService();
 
   // ============ Upload & parse ============
   async uploadWebinar(participantsCsv: Buffer, chatTxt: Buffer): Promise<WebinarSummary> {
@@ -456,12 +555,16 @@ export class WebinarAnalysisService {
 
     const response = await axios.get(WEBINAR_REGISTRATIONS_CSV_URL, { responseType: 'text', timeout: 20000 });
     const records: any[] = parse(response.data, { columns: true, skip_empty_lines: true, relax_column_count: true });
-    const rows: RegistrationRow[] = records.map((r) => ({
-      name: (r['Name'] || '').trim(),
-      phone: normalizePhone(r['Phone Number']),
-      email: normalizeEmail(r['Email']),
-      webinarDate: parseLooseDate((r['Offering'] || '').trim()),
-    }));
+    const rows: RegistrationRow[] = records.map((r) => {
+      const offering = (r['Offering'] || '').trim();
+      return {
+        name: (r['Name'] || '').trim(),
+        phone: normalizePhone(r['Phone Number']),
+        email: normalizeEmail(r['Email']),
+        offering,
+        webinarDate: parseLooseDate(offering),
+      };
+    });
 
     this.registrationCache = { data: rows, ts: now };
     return rows;
@@ -510,31 +613,99 @@ export class WebinarAnalysisService {
     const userByEmail = new Map(users.map((u: any) => [normalizeEmail(u.email), u]));
 
     const [paidSheet, registrations] = await Promise.all([this.fetchPaidSheet(), this.fetchRegistrations()]);
-    const paidByEmail = new Map(paidSheet.filter((r) => r.email).map((r) => [r.email, r]));
-    const regByEmail = new Map(registrations.filter((r) => r.email).map((r) => [r.email, r]));
+    // Grouped by email (not a single "last one wins" row) — a person can legitimately show up on
+    // either sheet more than once (registered for several webinars over time; paid once, then
+    // appears again on a later batch's row for some other reason), and both the Batch tags and the
+    // "paid on" column need to see every row, not just whichever happened to be last in the CSV.
+    // Indexed by BOTH email and phone — the registrations/paid sheets are filled in by hand over a
+    // year-plus of webinars, so the same person's email there often doesn't match whatever email
+    // they happened to type into Zoom's registration form (typos, a work vs. personal address, a
+    // second Gmail account). Phone numbers are far more stable, so matching on either catches real
+    // registrations/payments that an email-only lookup was silently missing.
+    const paidByEmail = new Map<string, PaidSheetRow[]>();
+    const paidByPhone = new Map<string, PaidSheetRow[]>();
+    for (const r of paidSheet) {
+      if (r.email) {
+        if (!paidByEmail.has(r.email)) paidByEmail.set(r.email, []);
+        paidByEmail.get(r.email)!.push(r);
+      }
+      if (r.phone) {
+        if (!paidByPhone.has(r.phone)) paidByPhone.set(r.phone, []);
+        paidByPhone.get(r.phone)!.push(r);
+      }
+    }
+    const regByEmail = new Map<string, RegistrationRow[]>();
+    const regByPhone = new Map<string, RegistrationRow[]>();
+    for (const r of registrations) {
+      if (r.email) {
+        if (!regByEmail.has(r.email)) regByEmail.set(r.email, []);
+        regByEmail.get(r.email)!.push(r);
+      }
+      if (r.phone) {
+        if (!regByPhone.has(r.phone)) regByPhone.set(r.phone, []);
+        regByPhone.get(r.phone)!.push(r);
+      }
+    }
 
     return batch.attendees.map((a) => {
       const u: any = userByEmail.get(a.email);
-      const paidRow = paidByEmail.get(a.email);
-      const regRow = regByEmail.get(a.email);
+      // Zoom only ever gives us name + email, never a phone — the phone-based lookup below can only
+      // kick in once we already know this person's number from their own userdetail account.
+      const knownPhone = normalizePhone(u?.mobile || u?.whatsappNumber);
+      const paidRows = Array.from(new Set([...(paidByEmail.get(a.email) || []), ...(knownPhone ? paidByPhone.get(knownPhone) || [] : [])]));
+      const regRows = Array.from(new Set([...(regByEmail.get(a.email) || []), ...(knownPhone ? regByPhone.get(knownPhone) || [] : [])]));
 
       const signedUp = !!u;
-      // A Full Paid sheet row dated to THIS webinar's own date is this session's live conversion
-      // being staged into the sheet, not a payment from before it — only count it as "previously
-      // paid" when its batch date is unparseable (assume prior, conservatively) or strictly earlier.
-      const paidRowIsPrior = !!(paidRow && paidRow.isPaid && (!paidRow.batchDate || paidRow.batchDate.getTime() < batch.webinarDate.getTime()));
-      const previouslyPaid = !!(u && TRIBE_TYPES.has(u.type)) || paidRowIsPrior;
-      const previouslyPaidOn = u && TRIBE_TYPES.has(u.type) && u.createdOn ? new Date(u.createdOn).toISOString() : paidRowIsPrior ? paidRow?.rawBatchDate || null : null;
+      // The Full Paid sheet (matched by email OR phone, see paidRows above) is the ONLY source of
+      // payment truth here — chat text is never used to infer a payment, even a message that reads
+      // like a confirmation ("paid", "payment done"). A sheet row dated strictly BEFORE this webinar
+      // means they paid prior to it; a row dated to THIS webinar's own date means they converted
+      // during it (see paidToday below) — either way it's an ops-entered record, not a guess.
+      const confirmedPaidRows = paidRows.filter((r) => r.isPaid);
+      const priorPaidRow = confirmedPaidRows.find((r) => !r.batchDate || r.batchDate.getTime() < batch.webinarDate.getTime());
+      const todayPaidRow = confirmedPaidRows.find((r) => r.batchDate && r.batchDate.getTime() === batch.webinarDate.getTime());
+      const previouslyPaid = !!(u && TRIBE_TYPES.has(u.type)) || !!priorPaidRow;
+      const previouslyPaidOn = u && TRIBE_TYPES.has(u.type) && u.createdOn ? new Date(u.createdOn).toISOString() : priorPaidRow?.rawBatchDate || null;
+      const paidToday = !!todayPaidRow;
+      // "Paid (5k)" overall = Tribe/TribeYearly, or confirmed paid on the sheet for ANY batch
+      // (before this webinar, during it, or an unparseable date) — sheet-confirmed only.
+      const paid5k = !!(u && TRIBE_TYPES.has(u.type)) || confirmedPaidRows.length > 0;
 
-      const paidEvidence = this.findPaidEvidence(a.chat);
-      const paid5kThisSession = !!paidEvidence;
-
-      const totalMin = a.sessions.reduce((sum, s) => sum + s.durationMin, 0);
+      const totalMin = mergedAttendanceMinutes(a.sessions);
       const lastLeave = a.sessions.reduce((max, s) => (s.leaveTime > max ? s.leaveTime : max), a.sessions[0]?.leaveTime || new Date(0));
 
-      const number = u?.mobile || u?.whatsappNumber || regRow?.phone || paidRow?.phone || a.email;
+      const number = u?.mobile || u?.whatsappNumber || regRows.find((r) => r.phone)?.phone || paidRows.find((r) => r.phone)?.phone || a.email;
 
       const signedUpBeforeSession = !!(u && u.createdOn && new Date(u.createdOn) < batch.webinarDate);
+
+      // Every webinar this person has ever registered for via the funnel, as short "<date> <topic>"
+      // tags — a person who signed up for more than one batch (e.g. a Momentum one and a Swing
+      // Trading one) gets both tags, not just whichever matches the currently-viewed webinar.
+      const batchTags = Array.from(
+        new Set(
+          regRows
+            .filter((r) => r.webinarDate)
+            .sort((x, y) => x.webinarDate!.getTime() - y.webinarDate!.getTime())
+            .map((r) => `${ordinalLabelWithYear(r.webinarDate!)} ${shortOfferingTopic(r.offering)}`)
+        )
+      );
+      const registeredBatches = batchTags.length > 0 ? batchTags.join(', ') : null;
+
+      // When they actually paid the 5k, earliest sheet record first (their original onboarding, not
+      // a later re-appearance); unparseable-but-confirmed dates fall back to the sheet's raw text;
+      // someone already Tribe/TribeYearly in Mongo with no matching sheet row at all (sheet match
+      // failed, or they were onboarded before this sheet existed) falls back to their account's own
+      // signup date. No chat-based fallback — if the sheet has nothing, this is null.
+      const datedConfirmedRows = confirmedPaidRows.filter((r) => r.batchDate).sort((x, y) => x.batchDate!.getTime() - y.batchDate!.getTime());
+      const paidOnBatch = datedConfirmedRows[0]
+        ? ordinalLabelWithYear(datedConfirmedRows[0].batchDate!)
+        : confirmedPaidRows[0]
+        ? confirmedPaidRows[0].rawBatchDate
+        : u && TRIBE_TYPES.has(u.type) && u.createdOn
+        ? ordinalLabelWithYear(dateOnly(new Date(u.createdOn)))
+        : null;
+
+      const registeredDates = regRows.filter((r) => r.webinarDate).map((r) => r.webinarDate!);
 
       return {
         email: a.email,
@@ -547,21 +718,74 @@ export class WebinarAnalysisService {
         signedUp,
         previouslyPaid,
         previouslyPaidOn,
-        paid5kThisSession,
-        paidEvidence,
+        paidToday,
+        paid5k,
         signedUpBeforeSession,
+        registeredBatches,
+        paidOnBatch,
+        registeredDates,
       };
     });
   }
 
-  private findPaidEvidence(chat: ChatMsg[]): { msg: string; elapsedSec: number } | null {
-    for (const c of chat) {
-      if (PAID_CHAT_PATTERNS.some((re) => re.test(c.msg))) return { msg: c.msg, elapsedSec: c.elapsedSec };
-    }
-    return null;
+  // ============ Report (7 summary cards) ============
+  // All 9 engagement metrics scoped to one segment's own members — same formulas the webinar-wide
+  // report used before, just computed against `members` instead of every attendee. Peak concurrency
+  // needs the raw session segments (not the enriched summary), so it's recomputed from `batch`
+  // filtered down to this segment's emails.
+  private computeSegmentMetrics(
+    members: EnrichedAttendee[],
+    batch: WebinarBatchDoc,
+    attendedThresholdMin: number,
+    reRegisteredCount: number | null = null
+  ): SegmentReport {
+    const pct = (n: number, base: number) => (base > 0 ? Math.round((n / base) * 1000) / 10 : 0);
+    const total = members.length;
+    const attendedList = members.filter((e) => e.totalMin >= attendedThresholdMin);
+
+    const middleCutoff = new Date(batch.sessionStart.getTime() + (batch.totalDurationMin / 2) * 60000);
+    const endCutoff = new Date(batch.sessionStart.getTime() + 120 * 60000);
+    const cutoff150 = new Date(batch.sessionStart.getTime() + 150 * 60000);
+    const cutoff180 = new Date(batch.sessionStart.getTime() + 180 * 60000);
+    const stayedTillMiddleCount = attendedList.filter((e) => e.lastLeave >= middleCutoff).length;
+    const stayedTillEnd2hrCount = attendedList.filter((e) => e.lastLeave >= endCutoff).length;
+    const stayedTill150Count = attendedList.filter((e) => e.lastLeave >= cutoff150).length;
+    const stayedTill180Count = attendedList.filter((e) => e.lastLeave >= cutoff180).length;
+
+    const totalChats = members.reduce((sum, e) => sum + e.chatCount, 0);
+    const avgAttendedDurationMin = attendedList.length > 0 ? Math.round((attendedList.reduce((sum, e) => sum + e.totalMin, 0) / attendedList.length) * 10) / 10 : null;
+    const avgRejoinsAttended = attendedList.length > 0 ? Math.round((attendedList.reduce((sum, e) => sum + e.rejoins, 0) / attendedList.length) * 100) / 100 : null;
+
+    const memberEmails = new Set(members.map((e) => e.email));
+    const peak = computePeakConcurrency(batch.attendees.filter((a) => memberEmails.has(a.email)));
+    // Only worth showing on an unusually long/engaging segment — on a typical ~2hr session these
+    // would just be noisy near-zero numbers against a cutoff nobody was ever going to reach. Gated
+    // per-segment (not the whole webinar), since one segment can run much more engaged than another.
+    const showExtendedStayCards = avgAttendedDurationMin !== null && avgAttendedDurationMin > 150;
+
+    // Genuine new conversions out of this segment — a Full Paid sheet row dated to THIS exact
+    // webinar's own date, regardless of whether they registered today, earlier, or not at all.
+    // Someone already paid before this session never shows up here (they're not in `members` at
+    // all once they're already paid — see the segment-priority split in getReport).
+    const converters = members.filter((e) => e.paidToday);
+    const conversionsAvgAttendedMin = converters.length > 0 ? Math.round((converters.reduce((sum, e) => sum + e.totalMin, 0) / converters.length) * 10) / 10 : null;
+
+    return {
+      totalRegistered: total,
+      attended: { count: attendedList.length, pct: pct(attendedList.length, total) },
+      totalChats,
+      avgAttendedDurationMin,
+      avgRejoinsAttended,
+      peakConcurrent: { count: peak.count, atTime: peak.atTime ? peak.atTime.toISOString() : null },
+      stayedTillMiddle: { count: stayedTillMiddleCount, pct: pct(stayedTillMiddleCount, attendedList.length) },
+      stayedTillEnd2hr: batch.totalDurationMin >= 120 ? { count: stayedTillEnd2hrCount, pct: pct(stayedTillEnd2hrCount, attendedList.length) } : null,
+      stayedTill150Min: showExtendedStayCards && batch.totalDurationMin >= 150 ? { count: stayedTill150Count, pct: pct(stayedTill150Count, attendedList.length) } : null,
+      stayedTill180Min: showExtendedStayCards && batch.totalDurationMin >= 180 ? { count: stayedTill180Count, pct: pct(stayedTill180Count, attendedList.length) } : null,
+      conversions: { count: converters.length, avgAttendedMin: conversionsAvgAttendedMin },
+      reRegisteredToday: reRegisteredCount !== null ? { count: reRegisteredCount, pct: pct(reRegisteredCount, total) } : null,
+    };
   }
 
-  // ============ Report (7 summary cards) ============
   async getReport(batchId: string, attendedThresholdMin: number): Promise<WebinarReport> {
     const batch = await this.loadBatch(batchId);
     const enriched = await this.enrich(batch);
@@ -569,31 +793,53 @@ export class WebinarAnalysisService {
 
     const sameDayRegs = registrations.filter((r) => r.webinarDate && r.webinarDate.getTime() === batch.webinarDate.getTime());
     const registrationDataAvailable = sameDayRegs.length > 0;
-    const attendeeEmails = new Set(enriched.map((e) => e.email));
-    const registeredViaFunnelCount = sameDayRegs.filter((r) => r.email && attendeeEmails.has(r.email)).length;
 
-    // Anyone with a registration-sheet row dated strictly BEFORE this webinar — i.e. they came in
-    // through the funnel for an earlier batch, not this one. Previously-paid people are excluded so
-    // this bucket and the Previously Paid card never overlap.
-    const priorRegEmails = new Set(registrations.filter((r) => r.email && r.webinarDate && r.webinarDate.getTime() < batch.webinarDate.getTime()).map((r) => r.email));
+    // Every attendee lands in exactly one segment. "Already Paid" means paid STRICTLY BEFORE this
+    // webinar's own date (`previouslyPaid`: Tribe/TribeYearly, or a sheet row dated earlier) — a
+    // live conversion in TODAY'S chat does NOT count as already paid, on purpose: someone who
+    // registered for today and paid live during this exact session is a Current Webinar conversion,
+    // not a pre-existing customer, and must never be pulled out of the Current/Previous buckets just
+    // because they happened to pay while we were looking. (`paidToday` — a Full Paid sheet row
+    // dated to this exact webinar — is surfaced separately per segment via the Conversions card
+    // instead.)
+    //
+    // Current vs. Previous is decided by each attendee's EARLIEST funnel registration
+    // (`registeredDates`, matched by email OR phone, same as `registeredBatches`): if they have ANY
+    // registration row dated strictly before this webinar, that earlier one is their "real" first
+    // registration, so they belong to "From Previous Webinar (Not Paid)" even if they also
+    // registered again for today — registering twice doesn't make them a fresh lead. Only someone
+    // with NO earlier registration at all, but one dated to today, counts as Current.
+    //
+    // Checked in this order: already-paid-before first, then an earlier registration, then today's,
+    // with Organic as the catch-all — making the four segments sum exactly back to the total.
+    const current: EnrichedAttendee[] = [];
+    const previousNotPaid: EnrichedAttendee[] = [];
+    const alreadyPaid: EnrichedAttendee[] = [];
+    const organic: EnrichedAttendee[] = [];
+    for (const e of enriched) {
+      const hasEarlierReg = e.registeredDates.some((d) => d.getTime() < batch.webinarDate.getTime());
+      const hasTodayReg = e.registeredDates.some((d) => d.getTime() === batch.webinarDate.getTime());
+      if (e.previouslyPaid) alreadyPaid.push(e);
+      else if (hasEarlierReg) previousNotPaid.push(e);
+      else if (hasTodayReg) current.push(e);
+      else organic.push(e);
+    }
+    // Of "From Previous Webinar (Not Paid)", how many also registered again for THIS exact webinar
+    // (not just resurfacing to attend, but a tracked repeat registration) — see `reRegisteredToday`.
+    const reRegisteredCount = previousNotPaid.filter((e) => e.registeredDates.some((d) => d.getTime() === batch.webinarDate.getTime())).length;
 
-    const total = enriched.length;
-    const pct = (n: number, base: number) => (base > 0 ? Math.round((n / base) * 1000) / 10 : 0);
-
-    const previouslyPaidList = enriched.filter((e) => e.previouslyPaid);
-    const fromPreviousWebinarCount = enriched.filter((e) => !e.previouslyPaid && priorRegEmails.has(e.email)).length;
-    const organicCount = Math.max(0, total - registeredViaFunnelCount - fromPreviousWebinarCount - previouslyPaidList.length);
-    const attendedList = enriched.filter((e) => e.totalMin >= attendedThresholdMin);
-
-    const middleCutoff = new Date(batch.sessionStart.getTime() + (batch.totalDurationMin / 2) * 60000);
-    const endCutoff = new Date(batch.sessionStart.getTime() + 120 * 60000);
-    const stayedTillMiddleCount = attendedList.filter((e) => e.lastLeave >= middleCutoff).length;
-    const stayedTillEnd2hrCount = attendedList.filter((e) => e.lastLeave >= endCutoff).length;
-
-    const totalChats = enriched.reduce((sum, e) => sum + e.chatCount, 0);
-    const avgAttendedDurationMin = attendedList.length > 0 ? Math.round((attendedList.reduce((sum, e) => sum + e.totalMin, 0) / attendedList.length) * 10) / 10 : null;
-    const avgRejoinsAttended = attendedList.length > 0 ? Math.round((attendedList.reduce((sum, e) => sum + e.rejoins, 0) / attendedList.length) * 100) / 100 : null;
-    const peak = computePeakConcurrency(batch.attendees);
+    // Reconciliation against the Funnel Analysis tab's own per-batch paid total for this exact date
+    // (Webinar + Organic + Sales Team sheet rows combined, fuzzy-resolved) — see `funnelPaidTotal`
+    // on WebinarReport. null when this date isn't in the admin-managed master batch list yet.
+    const dateKey = batch.webinarDate.toISOString().slice(0, 10);
+    let funnelPaidTotal: number | null = null;
+    try {
+      const detail = await this.funnelSvc.getWebinarBatchDetail([dateKey], false, ['webinar', 'organic', 'salesteam']);
+      const sum = (detail.webinar[0]?.paid || 0) + (detail.organic[0]?.paid || 0) + (detail.salesteam[0]?.paid || 0);
+      funnelPaidTotal = sum > 0 ? sum : null;
+    } catch {
+      funnelPaidTotal = null;
+    }
 
     return {
       webinar: {
@@ -607,20 +853,16 @@ export class WebinarAnalysisService {
       },
       attendedThresholdMin,
       cards: {
-        totalRegistered: total,
-        registeredViaFunnel: { count: registeredViaFunnelCount, pct: pct(registeredViaFunnelCount, total) },
-        fromPreviousWebinar: { count: fromPreviousWebinarCount, pct: pct(fromPreviousWebinarCount, total) },
-        previouslyPaid: { count: previouslyPaidList.length, pct: pct(previouslyPaidList.length, total) },
-        organic: { count: organicCount, pct: pct(organicCount, total) },
-        attended: { count: attendedList.length, pct: pct(attendedList.length, total) },
-        totalChats,
-        avgAttendedDurationMin,
-        avgRejoinsAttended,
-        peakConcurrent: { count: peak.count, atTime: peak.atTime ? peak.atTime.toISOString() : null },
-        stayedTillMiddle: { count: stayedTillMiddleCount, pct: pct(stayedTillMiddleCount, attendedList.length) },
-        stayedTillEnd2hr: batch.totalDurationMin >= 120 ? { count: stayedTillEnd2hrCount, pct: pct(stayedTillEnd2hrCount, attendedList.length) } : null,
+        totalRegistered: enriched.length,
+        segments: {
+          current: this.computeSegmentMetrics(current, batch, attendedThresholdMin),
+          previousNotPaid: this.computeSegmentMetrics(previousNotPaid, batch, attendedThresholdMin, reRegisteredCount),
+          alreadyPaid: this.computeSegmentMetrics(alreadyPaid, batch, attendedThresholdMin),
+          organic: this.computeSegmentMetrics(organic, batch, attendedThresholdMin),
+        },
       },
       registrationDataAvailable,
+      funnelPaidTotal,
     };
   }
 
@@ -628,24 +870,67 @@ export class WebinarAnalysisService {
   // Split by the SAME dynamic attended threshold the summary cards use (not a fixed ">0 minutes"
   // cutoff) — otherwise raising/lowering the threshold moves people between "attended" on the cards
   // and the two tables inconsistently (e.g. the Attended card says 70 but Main still lists all 109).
-  private static readonly MAIN_SORT_FIELDS = ['name', 'number', 'batchLabel', 'paid5k', 'totalMin', 'rejoins', 'chatCount', 'signedUp'];
-  private static readonly NOT_JOINED_SORT_FIELDS = ['name', 'number', 'batchLabel', 'paid5k', 'signedUp'];
+  private static readonly MAIN_SORT_FIELDS = ['name', 'number', 'registeredBatches', 'paid5k', 'paidOnBatch', 'totalMin', 'rejoins', 'chatCount', 'signedUp'];
+  private static readonly NOT_JOINED_SORT_FIELDS = ['name', 'number', 'registeredBatches', 'paid5k', 'paidOnBatch', 'signedUp'];
   private static readonly NOT_REGISTERED_SORT_FIELDS = ['name', 'number', 'signedUp', 'signedUpBeforeSession'];
   private static readonly KEYWORD_SORT_FIELDS = ['name', 'number', 'email', 'timeIso'];
 
-  private async mainRows(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc'): Promise<MainRow[]> {
+  // Backing list for the Chat tab's person picker — everyone who sent at least one chat message,
+  // sorted most-active-first. Returned unpaginated (bounded by attendee count, never more than a few
+  // hundred) so the picker can filter instantly client-side instead of round-tripping per keystroke.
+  async getChatPeople(batchId: string): Promise<ChatPersonRow[]> {
     const batch = await this.loadBatch(batchId);
     const enriched = await this.enrich(batch);
-    const batchLabel = ordinalLabel(batch.webinarDate);
+    return enriched
+      .filter((e) => e.chatCount > 0)
+      .map((e) => ({ email: e.email, name: e.name, number: e.number, signedUp: e.signedUp, chatCount: e.chatCount }))
+      .sort((a, b) => b.chatCount - a.chatCount);
+  }
+
+  async getBatchOptions(batchId: string): Promise<string[]> {
+    const batch = await this.loadBatch(batchId);
+    const enriched = await this.enrich(batch);
+    const tags = new Set<string>();
+    for (const e of enriched) {
+      if (!e.registeredBatches) continue;
+      for (const tag of e.registeredBatches.split(', ')) tags.add(tag);
+    }
+    return Array.from(tags).sort();
+  }
+
+  private matchesBatchFilter(registeredBatches: string | null, batchFilter?: string[]): boolean {
+    if (!batchFilter || batchFilter.length === 0) return true;
+    const tags = (registeredBatches || '').split(', ').filter(Boolean);
+    return batchFilter.some((b) => tags.includes(b));
+  }
+
+  // Case-insensitive substring match across whichever identity fields a row has — name/number/email
+  // plus "yes"/"no" for signedUp, so typing "yes" narrows to signed-up people. Empty search matches
+  // everything (search is a narrowing filter, never a required field).
+  private matchesSearch(fields: (string | null | undefined)[], search?: string): boolean {
+    const q = (search || '').trim().toLowerCase();
+    if (!q) return true;
+    return fields.some((f) => (f || '').toLowerCase().includes(q));
+  }
+
+  private async mainRows(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc', batchFilter?: string[], search?: string): Promise<MainRow[]> {
+    const batch = await this.loadBatch(batchId);
+    const enriched = await this.enrich(batch);
 
     let rows: MainRow[] = enriched
-      .filter((e) => e.totalMin >= attendedThresholdMin)
+      .filter(
+        (e) =>
+          e.totalMin >= attendedThresholdMin &&
+          this.matchesBatchFilter(e.registeredBatches, batchFilter) &&
+          this.matchesSearch([e.name, e.number, e.email, e.signedUp ? 'yes' : 'no'], search)
+      )
       .map((e) => ({
         email: e.email,
         name: e.name,
         number: e.number,
-        batchLabel,
-        paid5k: e.previouslyPaid || e.paid5kThisSession,
+        registeredBatches: e.registeredBatches,
+        paid5k: e.paid5k,
+        paidOnBatch: e.paidOnBatch,
         totalMin: Math.round(e.totalMin * 10) / 10,
         rejoins: e.rejoins,
         chatCount: e.chatCount,
@@ -656,42 +941,81 @@ export class WebinarAnalysisService {
     return rows;
   }
 
-  async getMainTable(batchId: string, attendedThresholdMin: number, page: number, pageSize: number, sortBy?: string, sortDir: SortDir = 'desc'): Promise<PagedResult<MainRow>> {
-    const rows = await this.mainRows(batchId, attendedThresholdMin, sortBy, sortDir);
+  async getMainTable(batchId: string, attendedThresholdMin: number, page: number, pageSize: number, sortBy?: string, sortDir: SortDir = 'desc', batchFilter?: string[], search?: string): Promise<PagedResult<MainRow>> {
+    const rows = await this.mainRows(batchId, attendedThresholdMin, sortBy, sortDir, batchFilter, search);
     return this.paginate(rows, page, pageSize);
   }
 
-  async downloadMainCsv(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc'): Promise<string> {
-    const rows = await this.mainRows(batchId, attendedThresholdMin, sortBy, sortDir);
-    const header = 'Name,Number,Batch,Paid (5k),Total Time (min),Rejoins,Chats,Signed Up\n';
+  // Matches AiSensy's real bulk-contact import schema exactly (confirmed against a working export
+  // from the account: Name,Mobile Number,Source,Tags,Experience,Challenge,Timeline,Capital,
+  // DecisionMaker — the last five are AiSensy's own custom lead-qualification fields, left blank for
+  // a bulk list where we don't have per-contact answers). Rows with no real phone on file (the
+  // email-fallback case — see `number` in enrich()) are dropped rather than uploaded as a bad
+  // "number" AiSensy would just reject anyway. `tag` is one piece of free text applied identically
+  // to every contact in the file, typed in by whoever's downloading. Values are only quoted when
+  // they actually need it (contain a comma/quote/newline) — AiSensy's own export never blanket-quotes.
+  private csvFieldEscape(val: string): string {
+    return /[",\n]/.test(val) ? `"${val.replace(/"/g, '""')}"` : val;
+  }
+
+  private buildAisensyCsv(rows: { name: string; number: string }[], tag: string): string {
+    const header = 'Name,Mobile Number,Source,Tags,Experience,Challenge,Timeline,Capital,DecisionMaker\n';
     const body = rows
-      .map((r) => [r.name, r.number, r.batchLabel, r.paid5k ? 'Yes' : 'No', r.totalMin, r.rejoins, r.chatCount, r.signedUp ? 'Yes' : 'No'].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .filter((r) => r.number && !r.number.includes('@'))
+      .map((r) => [this.csvFieldEscape(r.name), r.number, '', this.csvFieldEscape(tag), '', '', '', '', ''].join(','))
       .join('\n');
     return header + body;
   }
 
-  private async notJoinedRows(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc'): Promise<NotJoinedRow[]> {
+  async downloadMainCsv(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc', batchFilter?: string[], search?: string, format: 'raw' | 'aisensy' = 'raw', tag = ''): Promise<string> {
+    const rows = await this.mainRows(batchId, attendedThresholdMin, sortBy, sortDir, batchFilter, search);
+    if (format === 'aisensy') return this.buildAisensyCsv(rows, tag);
+    const header = 'Name,Number,Registered Batch(es),Paid (5k),Paid On,Total Time (min),Rejoins,Chats,Signed Up\n';
+    const body = rows
+      .map((r) =>
+        [r.name, r.number, r.registeredBatches || '', r.paid5k ? 'Yes' : 'No', r.paidOnBatch || '', r.totalMin, r.rejoins, r.chatCount, r.signedUp ? 'Yes' : 'No']
+          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+          .join(',')
+      )
+      .join('\n');
+    return header + body;
+  }
+
+  private async notJoinedRows(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc', batchFilter?: string[], search?: string): Promise<NotJoinedRow[]> {
     const batch = await this.loadBatch(batchId);
     const enriched = await this.enrich(batch);
-    const batchLabel = ordinalLabel(batch.webinarDate);
 
     const rows: NotJoinedRow[] = enriched
-      .filter((e) => e.totalMin < attendedThresholdMin)
-      .map((e) => ({ email: e.email, name: e.name, number: e.number, batchLabel, paid5k: e.previouslyPaid || e.paid5kThisSession, signedUp: e.signedUp }));
+      .filter(
+        (e) =>
+          e.totalMin < attendedThresholdMin &&
+          this.matchesBatchFilter(e.registeredBatches, batchFilter) &&
+          this.matchesSearch([e.name, e.number, e.email, e.signedUp ? 'yes' : 'no'], search)
+      )
+      .map((e) => ({
+        email: e.email,
+        name: e.name,
+        number: e.number,
+        registeredBatches: e.registeredBatches,
+        paid5k: e.paid5k,
+        paidOnBatch: e.paidOnBatch,
+        signedUp: e.signedUp,
+      }));
 
     return sortRows(rows, sortBy, sortDir, WebinarAnalysisService.NOT_JOINED_SORT_FIELDS);
   }
 
-  async getNotJoinedTable(batchId: string, attendedThresholdMin: number, page: number, pageSize: number, sortBy?: string, sortDir: SortDir = 'desc'): Promise<PagedResult<NotJoinedRow>> {
-    const rows = await this.notJoinedRows(batchId, attendedThresholdMin, sortBy, sortDir);
+  async getNotJoinedTable(batchId: string, attendedThresholdMin: number, page: number, pageSize: number, sortBy?: string, sortDir: SortDir = 'desc', batchFilter?: string[], search?: string): Promise<PagedResult<NotJoinedRow>> {
+    const rows = await this.notJoinedRows(batchId, attendedThresholdMin, sortBy, sortDir, batchFilter, search);
     return this.paginate(rows, page, pageSize);
   }
 
-  async downloadNotJoinedCsv(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc'): Promise<string> {
-    const rows = await this.notJoinedRows(batchId, attendedThresholdMin, sortBy, sortDir);
-    const header = 'Name,Number,Batch,Paid (5k),Signed Up\n';
+  async downloadNotJoinedCsv(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc', batchFilter?: string[], search?: string, format: 'raw' | 'aisensy' = 'raw', tag = ''): Promise<string> {
+    const rows = await this.notJoinedRows(batchId, attendedThresholdMin, sortBy, sortDir, batchFilter, search);
+    if (format === 'aisensy') return this.buildAisensyCsv(rows, tag);
+    const header = 'Name,Number,Registered Batch(es),Paid (5k),Paid On,Signed Up\n';
     const body = rows
-      .map((r) => [r.name, r.number, r.batchLabel, r.paid5k ? 'Yes' : 'No', r.signedUp ? 'Yes' : 'No'].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .map((r) => [r.name, r.number, r.registeredBatches || '', r.paid5k ? 'Yes' : 'No', r.paidOnBatch || '', r.signedUp ? 'Yes' : 'No'].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
       .join('\n');
     return header + body;
   }
@@ -725,15 +1049,18 @@ export class WebinarAnalysisService {
     return { rows, registrationDataAvailable: sameDayRegs.length > 0 };
   }
 
-  async getNotRegisteredTable(batchId: string, page: number, pageSize: number, sortBy?: string, sortDir: SortDir = 'desc'): Promise<PagedResult<NotRegisteredRow> & { registrationDataAvailable: boolean }> {
+  async getNotRegisteredTable(batchId: string, page: number, pageSize: number, sortBy?: string, sortDir: SortDir = 'desc', search?: string): Promise<PagedResult<NotRegisteredRow> & { registrationDataAvailable: boolean }> {
     const { rows, registrationDataAvailable } = await this.notRegisteredRows(batchId);
-    const sorted = sortRows(rows, sortBy, sortDir, WebinarAnalysisService.NOT_REGISTERED_SORT_FIELDS);
+    const matched = rows.filter((r) => this.matchesSearch([r.name, r.number, r.email, r.signedUp ? 'yes' : 'no'], search));
+    const sorted = sortRows(matched, sortBy, sortDir, WebinarAnalysisService.NOT_REGISTERED_SORT_FIELDS);
     return { ...this.paginate(sorted, page, pageSize), registrationDataAvailable };
   }
 
-  async downloadNotRegisteredCsv(batchId: string, sortBy?: string, sortDir: SortDir = 'desc'): Promise<string> {
+  async downloadNotRegisteredCsv(batchId: string, sortBy?: string, sortDir: SortDir = 'desc', search?: string, format: 'raw' | 'aisensy' = 'raw', tag = ''): Promise<string> {
     const { rows } = await this.notRegisteredRows(batchId);
-    const sorted = sortRows(rows, sortBy, sortDir, WebinarAnalysisService.NOT_REGISTERED_SORT_FIELDS);
+    const matched = rows.filter((r) => this.matchesSearch([r.name, r.number, r.email, r.signedUp ? 'yes' : 'no'], search));
+    const sorted = sortRows(matched, sortBy, sortDir, WebinarAnalysisService.NOT_REGISTERED_SORT_FIELDS);
+    if (format === 'aisensy') return this.buildAisensyCsv(sorted, tag);
     const header = 'Name,Number,Signed Up,Signed Up Before Session\n';
     const body = sorted
       .map((r) => [r.name, r.number, r.signedUp ? 'Yes' : 'No', r.signedUpBeforeSession ? 'Yes' : 'No'].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
@@ -756,14 +1083,11 @@ export class WebinarAnalysisService {
 
     const rows: KeywordRow[] = [];
     for (const a of batch.attendees) {
+      const name = nameByEmail.get(a.email) || a.email;
+      const number = numberByEmail.get(a.email) || a.email;
       for (const c of a.chat) {
         if (c.msg.toLowerCase().includes(kw)) {
-          rows.push({
-            email: a.email,
-            name: nameByEmail.get(a.email) || a.email,
-            number: numberByEmail.get(a.email) || a.email,
-            timeIso: new Date(batch.sessionStart.getTime() + c.elapsedSec * 1000).toISOString(),
-          });
+          rows.push({ email: a.email, name, number, timeIso: new Date(batch.sessionStart.getTime() + c.elapsedSec * 1000).toISOString(), msg: c.msg });
         }
       }
     }
@@ -776,13 +1100,14 @@ export class WebinarAnalysisService {
     return this.paginate(rows, page, pageSize);
   }
 
-  async downloadKeywordCsv(batchId: string, keyword: string, sortBy?: string, sortDir: SortDir = 'desc'): Promise<string> {
+  async downloadKeywordCsv(batchId: string, keyword: string, sortBy?: string, sortDir: SortDir = 'desc', format: 'raw' | 'aisensy' = 'raw', tag = ''): Promise<string> {
     const rows = await this.keywordRows(batchId, keyword, sortBy, sortDir);
-    const header = 'Name,Number,Email,Time (IST)\n';
+    if (format === 'aisensy') return this.buildAisensyCsv(rows, tag);
+    const header = 'Name,Number,Email,Time (IST),Message\n';
     const body = rows
       .map((r) => {
         const istTime = new Date(r.timeIso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
-        return [r.name, r.number, r.email, istTime].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',');
+        return [r.name, r.number, r.email, istTime, r.msg].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',');
       })
       .join('\n');
     return header + body;
@@ -805,10 +1130,9 @@ export class WebinarAnalysisService {
       signedUp: e.signedUp,
       previouslyPaid: e.previouslyPaid,
       previouslyPaidOn: e.previouslyPaidOn,
-      paid5k: e.previouslyPaid || e.paid5kThisSession,
-      paidEvidence: e.paidEvidence
-        ? { msg: e.paidEvidence.msg, wallClock: new Date(batch.sessionStart.getTime() + e.paidEvidence.elapsedSec * 1000).toISOString() }
-        : null,
+      paid5k: e.paid5k,
+      paidOnBatch: e.paidOnBatch,
+      registeredBatches: e.registeredBatches,
       totalMin: Math.round(e.totalMin * 10) / 10,
       sessions: raw.sessions.map((s) => ({ joinTime: s.joinTime.toISOString(), leaveTime: s.leaveTime.toISOString(), durationMin: s.durationMin })),
       chat: raw.chat.map((c) => ({ wallClock: new Date(batch.sessionStart.getTime() + c.elapsedSec * 1000).toISOString(), msg: c.msg })),
