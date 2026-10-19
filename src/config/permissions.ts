@@ -80,8 +80,9 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'card:sales-calls:main', label: 'Call Performance Table', type: 'card', tabKey: 'tab:sales-calls' },
 
   { key: 'tab:webinar-analysis', label: 'Webinar Analysis', type: 'tab' },
-  { key: 'card:webinar-analysis:main', label: 'Webinar Report & Tables', type: 'card', tabKey: 'tab:webinar-analysis' },
+  { key: 'card:webinar-analysis:main', label: 'Zoom Analysis (Report & Tables)', type: 'card', tabKey: 'tab:webinar-analysis' },
   { key: 'card:webinar-analysis:upload', label: 'Upload Webinar Data', type: 'card', tabKey: 'tab:webinar-analysis' },
+  { key: 'card:webinar-analysis:registrations', label: 'Webinar Registrations (Payments)', type: 'card', tabKey: 'tab:webinar-analysis' },
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
@@ -108,6 +109,7 @@ export const ROUTE_PERMISSION_MAP: Record<string, string> = {
   '/api/emandate-tracker': 'tab:emandate-tracker',
   '/api/sales-calls': 'tab:sales-calls',
   '/api/webinar-analysis': 'tab:webinar-analysis',
+  '/api/webinar-registrations': 'tab:webinar-analysis',
 };
 
 // Default permission grants per role. Seeded into dashboard_role_permissions on
@@ -137,6 +139,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'tab:webinar-analysis',
     'card:webinar-analysis:main',
     'card:webinar-analysis:upload',
+    'card:webinar-analysis:registrations',
   ],
   sales_team: [
     'tab:funnel-analysis',
@@ -162,5 +165,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:sales-calls:main',
     'tab:webinar-analysis',
     'card:webinar-analysis:main',
+    'card:webinar-analysis:registrations',
   ],
 };

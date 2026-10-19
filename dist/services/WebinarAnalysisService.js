@@ -669,15 +669,22 @@ class WebinarAnalysisService {
         const rows = await this.mainRows(batchId, attendedThresholdMin, sortBy, sortDir, batchFilter, search);
         return this.paginate(rows, page, pageSize);
     }
-    // AiSensy's bulk WhatsApp contact import only recognizes Name/Mobile Number/Tags — rows with no
-    // real phone on file (the email-fallback case — see `number` in enrich()) are dropped rather than
-    // uploaded as a bad "number" AiSensy would just reject anyway. `tag` is one piece of free text
-    // applied identically to every contact in the file, typed in by whoever's downloading.
+    // Matches AiSensy's real bulk-contact import schema exactly (confirmed against a working export
+    // from the account: Name,Mobile Number,Source,Tags,Experience,Challenge,Timeline,Capital,
+    // DecisionMaker — the last five are AiSensy's own custom lead-qualification fields, left blank for
+    // a bulk list where we don't have per-contact answers). Rows with no real phone on file (the
+    // email-fallback case — see `number` in enrich()) are dropped rather than uploaded as a bad
+    // "number" AiSensy would just reject anyway. `tag` is one piece of free text applied identically
+    // to every contact in the file, typed in by whoever's downloading. Values are only quoted when
+    // they actually need it (contain a comma/quote/newline) — AiSensy's own export never blanket-quotes.
+    csvFieldEscape(val) {
+        return /[",\n]/.test(val) ? `"${val.replace(/"/g, '""')}"` : val;
+    }
     buildAisensyCsv(rows, tag) {
-        const header = 'Name,Mobile Number,Tags\n';
+        const header = 'Name,Mobile Number,Source,Tags,Experience,Challenge,Timeline,Capital,DecisionMaker\n';
         const body = rows
             .filter((r) => r.number && !r.number.includes('@'))
-            .map((r) => [r.name, r.number, tag].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+            .map((r) => [this.csvFieldEscape(r.name), r.number, '', this.csvFieldEscape(tag), '', '', '', '', ''].join(','))
             .join('\n');
         return header + body;
     }

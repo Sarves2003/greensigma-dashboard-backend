@@ -147,6 +147,7 @@ export declare class WebinarAnalysisService {
     private matchesSearch;
     private mainRows;
     getMainTable(batchId: string, attendedThresholdMin: number, page: number, pageSize: number, sortBy?: string, sortDir?: SortDir, batchFilter?: string[], search?: string): Promise<PagedResult<MainRow>>;
+    private csvFieldEscape;
     private buildAisensyCsv;
     downloadMainCsv(batchId: string, attendedThresholdMin: number, sortBy?: string, sortDir?: SortDir, batchFilter?: string[], search?: string, format?: 'raw' | 'aisensy', tag?: string): Promise<string>;
     private notJoinedRows;
