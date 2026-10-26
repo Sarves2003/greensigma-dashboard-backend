@@ -50,6 +50,13 @@ function normalizePhone(raw: string | null | undefined): string {
   return digits.slice(-10);
 }
 
+// Mirrors FunnelAnalysisService's normalizeReferralCode — referral codes are free-typed at
+// signup-link creation time, so the same code can land in the DB in several casings.
+function normalizeReferralCode(raw: string | null | undefined): string | null {
+  const trimmed = (raw || '').toString().trim();
+  return trimmed ? trimmed.toUpperCase() : null;
+}
+
 // "20th JUNE 2026" / "3rd Oct 2026 Momentum Investing Webinar" style strings.
 function parseLooseDate(text: string): Date | null {
   if (!text) return null;
@@ -278,6 +285,24 @@ export interface SegmentReport {
   reRegisteredToday: CountPct | null;
 }
 
+export type SegmentKey = 'current' | 'previousNotPaid' | 'alreadyPaid' | 'organic';
+
+// Which of a segment's cards was clicked — each one narrows the drill-down list to exactly the
+// people that card's own number counts, not the whole segment. 'attended' covers the Attended card
+// AND the two averages (Avg Time / Avg Rejoins), since both are computed over that same population,
+// not a further subset of it.
+export type SegmentMetricKey =
+  | 'total'
+  | 'attended'
+  | 'totalChats'
+  | 'peakConcurrent'
+  | 'stayedTillMiddle'
+  | 'stayedTillEnd2hr'
+  | 'stayedTill150Min'
+  | 'stayedTill180Min'
+  | 'conversions'
+  | 'reRegisteredToday';
+
 export interface WebinarReport {
   webinar: {
     id: string;
@@ -363,6 +388,22 @@ export interface ChatPersonRow {
   chatCount: number;
 }
 
+// Backing list for clicking into a segment's cards ("Organic", "Already Paid Members", etc.) — every
+// member of that segment, enriched with their Sigma Scanner account (signup date + referral code) so
+// the Owner can see exactly who these people are, not just the aggregate count on the card.
+export interface SegmentMemberRow {
+  email: string;
+  name: string;
+  number: string;
+  signedUp: boolean;
+  signupDate: string | null; // Sigma Scanner (userdetail.createdOn) — "nil" in the UI whenever not signed up
+  referralCode: string | null; // their real referral code when signed up; otherwise the name of
+                                 // whichever other source (funnel registration / Paid sheet / Zoom) is
+                                 // the only record we have of them — see EnrichedAttendee.referralCode
+  attended: boolean; // this segment member's own totalMin against the currently-selected threshold
+  totalMin: number;
+}
+
 export interface AttendeeDetail {
   email: string;
   name: string;
@@ -405,6 +446,14 @@ interface EnrichedAttendee {
   // (same matching `registeredBatches` is built from) — used to bucket them into Current/Previous
   // by their EARLIEST registration, not just whichever one happens to be today's.
   registeredDates: Date[];
+  signupDate: string | null; // userdetail.createdOn ISO — null whenever not signed up to Sigma Scanner
+  // Sigma Scanner's own referral code when they're signed up (null if that field is simply blank on
+  // their account — a real "nil", never backfilled). When NOT signed up, this instead names whichever
+  // OTHER source is the only record we have of this person, in the same trust order the rest of this
+  // method already uses: a tracked funnel registration row first, then the Paid sheet, and only when
+  // neither exists does it collapse to "Zoom" — meaning the Zoom participants export is literally the
+  // only place this person's identity came from.
+  referralCode: string | null;
 }
 
 export class WebinarAnalysisService {
@@ -607,7 +656,7 @@ export class WebinarAnalysisService {
       ? await db
           .collection('userdetail')
           .find({ email: { $in: emails } })
-          .project({ email: 1, type: 1, mobile: 1, whatsappNumber: 1, createdOn: 1 })
+          .project({ email: 1, type: 1, mobile: 1, whatsappNumber: 1, createdOn: 1, referalCode: 1 })
           .toArray()
       : [];
     const userByEmail = new Map(users.map((u: any) => [normalizeEmail(u.email), u]));
@@ -707,6 +756,15 @@ export class WebinarAnalysisService {
 
       const registeredDates = regRows.filter((r) => r.webinarDate).map((r) => r.webinarDate!);
 
+      const signupDate = u && u.createdOn ? new Date(u.createdOn).toISOString() : null;
+      const referralCode = u
+        ? normalizeReferralCode(u.referalCode)
+        : regRows.length > 0
+        ? 'Webinar Registration Sheet'
+        : paidRows.length > 0
+        ? 'Paid Sheet'
+        : 'Zoom (no other record)';
+
       return {
         email: a.email,
         name: a.names[0] || a.email,
@@ -724,8 +782,72 @@ export class WebinarAnalysisService {
         registeredBatches,
         paidOnBatch,
         registeredDates,
+        signupDate,
+        referralCode,
       };
     });
+  }
+
+  // The same 4 stay-duration cutoffs are needed both by computeSegmentMetrics (to count how many
+  // people cleared each one) and by filterMembersForMetric (to recover exactly WHICH people those
+  // counts refer to when a card is clicked) — pulled out here so the two can never silently drift
+  // apart into disagreeing about what "stayed till middle" actually means.
+  private getStayCutoffs(batch: WebinarBatchDoc): { middle: Date; end2hr: Date; at150: Date; at180: Date } {
+    return {
+      middle: new Date(batch.sessionStart.getTime() + (batch.totalDurationMin / 2) * 60000),
+      end2hr: new Date(batch.sessionStart.getTime() + 120 * 60000),
+      at150: new Date(batch.sessionStart.getTime() + 150 * 60000),
+      at180: new Date(batch.sessionStart.getTime() + 180 * 60000),
+    };
+  }
+
+  // Narrows a segment's full member list down to exactly the people behind ONE card's number —
+  // the same population computeSegmentMetrics counted for that card, recovered here instead of just
+  // counted. Every cutoff/grouping mirrors computeSegmentMetrics exactly (shared via getStayCutoffs
+  // for the 4 stay-duration ones) so a card's count and its drill-down list can never disagree.
+  private filterMembersForMetric(members: EnrichedAttendee[], batch: WebinarBatchDoc, attendedThresholdMin: number, metricKey: SegmentMetricKey): EnrichedAttendee[] {
+    const attendedList = members.filter((e) => e.totalMin >= attendedThresholdMin);
+    switch (metricKey) {
+      case 'total':
+        return members;
+      case 'attended':
+        return attendedList;
+      case 'totalChats':
+        // "Total Chats" on the card is a MESSAGE count, not a person count, so there's no subset of
+        // people whose size equals that number — the closest useful drill-down is everyone who sent
+        // at least one message, most active first.
+        return members.filter((e) => e.chatCount > 0).sort((a, b) => b.chatCount - a.chatCount);
+      case 'conversions':
+        // A Full Paid sheet row dated to THIS exact webinar — see computeSegmentMetrics' `converters`.
+        return members.filter((e) => e.paidToday);
+      case 'reRegisteredToday':
+        return members.filter((e) => e.registeredDates.some((d) => d.getTime() === batch.webinarDate.getTime()));
+      case 'stayedTillMiddle':
+        return attendedList.filter((e) => e.lastLeave >= this.getStayCutoffs(batch).middle);
+      case 'stayedTillEnd2hr':
+        return attendedList.filter((e) => e.lastLeave >= this.getStayCutoffs(batch).end2hr);
+      case 'stayedTill150Min':
+        return attendedList.filter((e) => e.lastLeave >= this.getStayCutoffs(batch).at150);
+      case 'stayedTill180Min':
+        return attendedList.filter((e) => e.lastLeave >= this.getStayCutoffs(batch).at180);
+      case 'peakConcurrent': {
+        // Same sweep-line moment computeSegmentMetrics finds for this segment (scoped to its own
+        // members, not the whole webinar) — then, unlike that count-only pass, actually resolves WHO
+        // had a session spanning that exact instant.
+        const memberEmails = new Set(members.map((e) => e.email));
+        const peak = computePeakConcurrency(batch.attendees.filter((a) => memberEmails.has(a.email)));
+        if (!peak.atTime) return [];
+        const atMs = peak.atTime.getTime();
+        const presentEmails = new Set(
+          batch.attendees
+            .filter((a) => memberEmails.has(a.email) && a.sessions.some((s) => s.joinTime.getTime() <= atMs && s.leaveTime.getTime() >= atMs))
+            .map((a) => a.email)
+        );
+        return members.filter((e) => presentEmails.has(e.email));
+      }
+      default:
+        return members;
+    }
   }
 
   // ============ Report (7 summary cards) ============
@@ -743,14 +865,11 @@ export class WebinarAnalysisService {
     const total = members.length;
     const attendedList = members.filter((e) => e.totalMin >= attendedThresholdMin);
 
-    const middleCutoff = new Date(batch.sessionStart.getTime() + (batch.totalDurationMin / 2) * 60000);
-    const endCutoff = new Date(batch.sessionStart.getTime() + 120 * 60000);
-    const cutoff150 = new Date(batch.sessionStart.getTime() + 150 * 60000);
-    const cutoff180 = new Date(batch.sessionStart.getTime() + 180 * 60000);
-    const stayedTillMiddleCount = attendedList.filter((e) => e.lastLeave >= middleCutoff).length;
-    const stayedTillEnd2hrCount = attendedList.filter((e) => e.lastLeave >= endCutoff).length;
-    const stayedTill150Count = attendedList.filter((e) => e.lastLeave >= cutoff150).length;
-    const stayedTill180Count = attendedList.filter((e) => e.lastLeave >= cutoff180).length;
+    const cutoffs = this.getStayCutoffs(batch);
+    const stayedTillMiddleCount = attendedList.filter((e) => e.lastLeave >= cutoffs.middle).length;
+    const stayedTillEnd2hrCount = attendedList.filter((e) => e.lastLeave >= cutoffs.end2hr).length;
+    const stayedTill150Count = attendedList.filter((e) => e.lastLeave >= cutoffs.at150).length;
+    const stayedTill180Count = attendedList.filter((e) => e.lastLeave >= cutoffs.at180).length;
 
     const totalChats = members.reduce((sum, e) => sum + e.chatCount, 0);
     const avgAttendedDurationMin = attendedList.length > 0 ? Math.round((attendedList.reduce((sum, e) => sum + e.totalMin, 0) / attendedList.length) * 10) / 10 : null;
@@ -786,32 +905,30 @@ export class WebinarAnalysisService {
     };
   }
 
-  async getReport(batchId: string, attendedThresholdMin: number): Promise<WebinarReport> {
-    const batch = await this.loadBatch(batchId);
-    const enriched = await this.enrich(batch);
-    const registrations = await this.fetchRegistrations();
-
-    const sameDayRegs = registrations.filter((r) => r.webinarDate && r.webinarDate.getTime() === batch.webinarDate.getTime());
-    const registrationDataAvailable = sameDayRegs.length > 0;
-
-    // Every attendee lands in exactly one segment. "Already Paid" means paid STRICTLY BEFORE this
-    // webinar's own date (`previouslyPaid`: Tribe/TribeYearly, or a sheet row dated earlier) — a
-    // live conversion in TODAY'S chat does NOT count as already paid, on purpose: someone who
-    // registered for today and paid live during this exact session is a Current Webinar conversion,
-    // not a pre-existing customer, and must never be pulled out of the Current/Previous buckets just
-    // because they happened to pay while we were looking. (`paidToday` — a Full Paid sheet row
-    // dated to this exact webinar — is surfaced separately per segment via the Conversions card
-    // instead.)
-    //
-    // Current vs. Previous is decided by each attendee's EARLIEST funnel registration
-    // (`registeredDates`, matched by email OR phone, same as `registeredBatches`): if they have ANY
-    // registration row dated strictly before this webinar, that earlier one is their "real" first
-    // registration, so they belong to "From Previous Webinar (Not Paid)" even if they also
-    // registered again for today — registering twice doesn't make them a fresh lead. Only someone
-    // with NO earlier registration at all, but one dated to today, counts as Current.
-    //
-    // Checked in this order: already-paid-before first, then an earlier registration, then today's,
-    // with Organic as the catch-all — making the four segments sum exactly back to the total.
+  // Every attendee lands in exactly one segment. "Already Paid" means paid STRICTLY BEFORE this
+  // webinar's own date (`previouslyPaid`: Tribe/TribeYearly, or a sheet row dated earlier) — a
+  // live conversion in TODAY'S chat does NOT count as already paid, on purpose: someone who
+  // registered for today and paid live during this exact session is a Current Webinar conversion,
+  // not a pre-existing customer, and must never be pulled out of the Current/Previous buckets just
+  // because they happened to pay while we were looking. (`paidToday` — a Full Paid sheet row
+  // dated to this exact webinar — is surfaced separately per segment via the Conversions card
+  // instead.)
+  //
+  // Current vs. Previous is decided by each attendee's EARLIEST funnel registration
+  // (`registeredDates`, matched by email OR phone, same as `registeredBatches`): if they have ANY
+  // registration row dated strictly before this webinar, that earlier one is their "real" first
+  // registration, so they belong to "From Previous Webinar (Not Paid)" even if they also
+  // registered again for today — registering twice doesn't make them a fresh lead. Only someone
+  // with NO earlier registration at all, but one dated to today, counts as Current.
+  //
+  // Checked in this order: already-paid-before first, then an earlier registration, then today's,
+  // with Organic as the catch-all — making the four segments sum exactly back to the total.
+  //
+  // Pulled out as its own method (rather than inlined in getReport, where it used to live) so
+  // getSegmentMembers can partition attendees the EXACT same way the summary cards do — two
+  // independently-maintained copies of this priority order would be a standing risk of the
+  // drill-down list silently disagreeing with the card count that opened it.
+  private partitionIntoSegments(enriched: EnrichedAttendee[], batch: WebinarBatchDoc): Record<SegmentKey, EnrichedAttendee[]> {
     const current: EnrichedAttendee[] = [];
     const previousNotPaid: EnrichedAttendee[] = [];
     const alreadyPaid: EnrichedAttendee[] = [];
@@ -824,6 +941,18 @@ export class WebinarAnalysisService {
       else if (hasTodayReg) current.push(e);
       else organic.push(e);
     }
+    return { current, previousNotPaid, alreadyPaid, organic };
+  }
+
+  async getReport(batchId: string, attendedThresholdMin: number): Promise<WebinarReport> {
+    const batch = await this.loadBatch(batchId);
+    const enriched = await this.enrich(batch);
+    const registrations = await this.fetchRegistrations();
+
+    const sameDayRegs = registrations.filter((r) => r.webinarDate && r.webinarDate.getTime() === batch.webinarDate.getTime());
+    const registrationDataAvailable = sameDayRegs.length > 0;
+
+    const { current, previousNotPaid, alreadyPaid, organic } = this.partitionIntoSegments(enriched, batch);
     // Of "From Previous Webinar (Not Paid)", how many also registered again for THIS exact webinar
     // (not just resurfacing to attend, but a tracked repeat registration) — see `reRegisteredToday`.
     const reRegisteredCount = previousNotPaid.filter((e) => e.registeredDates.some((d) => d.getTime() === batch.webinarDate.getTime())).length;
@@ -864,6 +993,41 @@ export class WebinarAnalysisService {
       registrationDataAvailable,
       funnelPaidTotal,
     };
+  }
+
+  // ============ Segment member drill-down (clicking into a segment's cards) ============
+  private static readonly SEGMENT_MEMBER_SORT_FIELDS = ['name', 'number', 'signedUp', 'signupDate', 'referralCode', 'totalMin', 'attended'];
+
+  private async segmentMemberRows(batchId: string, segmentKey: SegmentKey, metricKey: SegmentMetricKey, attendedThresholdMin: number, sortBy?: string, sortDir: SortDir = 'desc', search?: string): Promise<SegmentMemberRow[]> {
+    const batch = await this.loadBatch(batchId);
+    const enriched = await this.enrich(batch);
+    const segmentMembers = this.partitionIntoSegments(enriched, batch)[segmentKey];
+    const members = this.filterMembersForMetric(segmentMembers, batch, attendedThresholdMin, metricKey);
+
+    let rows: SegmentMemberRow[] = members
+      .filter((e) => this.matchesSearch([e.name, e.number, e.email, e.signedUp ? 'yes' : 'no'], search))
+      .map((e) => ({
+        email: e.email,
+        name: e.name,
+        number: e.number,
+        signedUp: e.signedUp,
+        signupDate: e.signupDate,
+        referralCode: e.referralCode,
+        attended: e.totalMin >= attendedThresholdMin,
+        totalMin: Math.round(e.totalMin * 10) / 10,
+      }));
+
+    // No explicit sort: "Total Chats" keeps the most-active-first order filterMembersForMetric
+    // already applied (sorting by totalMin here would discard that), everything else defaults to
+    // longest-attended-first.
+    if (sortBy) rows = sortRows(rows, sortBy, sortDir, WebinarAnalysisService.SEGMENT_MEMBER_SORT_FIELDS);
+    else if (metricKey !== 'totalChats') rows = rows.sort((a, b) => b.totalMin - a.totalMin);
+    return rows;
+  }
+
+  async getSegmentMembers(batchId: string, segmentKey: SegmentKey, metricKey: SegmentMetricKey, attendedThresholdMin: number, page: number, pageSize: number, sortBy?: string, sortDir: SortDir = 'desc', search?: string): Promise<PagedResult<SegmentMemberRow>> {
+    const rows = await this.segmentMemberRows(batchId, segmentKey, metricKey, attendedThresholdMin, sortBy, sortDir, search);
+    return this.paginate(rows, page, pageSize);
   }
 
   // ============ Main / Not Joined tables ============

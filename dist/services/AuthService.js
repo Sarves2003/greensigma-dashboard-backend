@@ -43,14 +43,23 @@ class AuthService {
             if (!existing) {
                 await this.roleRepo.setPermissions(role, permissions_1.DEFAULT_ROLE_PERMISSIONS[role]);
             }
-            else if (isAlwaysEverything && existing.permissions.length !== permissions_1.PERMISSION_KEYS.length) {
+            else if (isAlwaysEverything) {
                 // owner/super_admin/manager are DEFINED as "every permission that exists" (DEFAULT_ROLE_PERMISSIONS
                 // spreads the full catalog for them) — never a curated subset an Owner deliberately trimmed down.
                 // Without this, a role doc seeded before some later tab was added stays stuck missing it forever,
                 // since the `!existing` branch above only ever fires once. product_manager/sales_team are real
                 // curated subsets (an Owner may have edited them via the admin UI), so they're deliberately left
                 // alone here — adding a brand-new tab to THEIR defaults still needs a one-time manual top-up.
-                await this.roleRepo.setPermissions(role, permissions_1.PERMISSION_KEYS);
+                //
+                // Checked by actual set difference, not array length: a length-only comparison (the original
+                // version of this check) can miss a real gap whenever the two arrays differ in more than one
+                // place at once, so it silently left a role stuck missing a permission even on repeated
+                // restarts. Topping up the exact missing keys is also strictly additive — it never reorders
+                // or drops anything already stored.
+                const missing = permissions_1.PERMISSION_KEYS.filter((k) => !existing.permissions.includes(k));
+                if (missing.length > 0) {
+                    await this.roleRepo.setPermissions(role, [...existing.permissions, ...missing]);
+                }
             }
         }
         const ownerEmail = process.env.INITIAL_OWNER_EMAIL;

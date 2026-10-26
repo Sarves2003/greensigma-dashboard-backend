@@ -21,6 +21,7 @@ import emandateTrackerRoutes from './routes/emandateTracker';
 import salesCallsRoutes from './routes/salesCalls';
 import webinarAnalysisRoutes from './routes/webinarAnalysis';
 import webinarRegistrationsRoutes from './routes/webinarRegistrations';
+import webinarMomentumAnalyticsRoutes from './routes/webinarMomentumAnalytics';
 
 dotenv.config();
 
@@ -65,6 +66,7 @@ app.use('/api/emandate-tracker', requireAuth, requirePermission(ROUTE_PERMISSION
 app.use('/api/sales-calls', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/sales-calls']), salesCallsRoutes);
 app.use('/api/webinar-analysis', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/webinar-analysis']), webinarAnalysisRoutes);
 app.use('/api/webinar-registrations', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/webinar-registrations']), webinarRegistrationsRoutes);
+app.use('/api/webinar-momentum-analytics', requireAuth, requirePermission(ROUTE_PERMISSION_MAP['/api/webinar-momentum-analytics']), webinarMomentumAnalyticsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

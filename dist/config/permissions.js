@@ -64,6 +64,7 @@ exports.PERMISSIONS = [
     { key: 'card:webinar-analysis:main', label: 'Zoom Analysis (Report & Tables)', type: 'card', tabKey: 'tab:webinar-analysis' },
     { key: 'card:webinar-analysis:upload', label: 'Upload Webinar Data', type: 'card', tabKey: 'tab:webinar-analysis' },
     { key: 'card:webinar-analysis:registrations', label: 'Webinar Registrations (Payments)', type: 'card', tabKey: 'tab:webinar-analysis' },
+    { key: 'card:webinar-analysis:analytics', label: 'Analytics (Conversion & Attendance Trends)', type: 'card', tabKey: 'tab:webinar-analysis' },
 ];
 exports.PERMISSION_KEYS = exports.PERMISSIONS.map((p) => p.key);
 exports.TAB_KEYS = exports.PERMISSIONS.filter((p) => p.type === 'tab').map((p) => p.key);
@@ -88,6 +89,7 @@ exports.ROUTE_PERMISSION_MAP = {
     '/api/sales-calls': 'tab:sales-calls',
     '/api/webinar-analysis': 'tab:webinar-analysis',
     '/api/webinar-registrations': 'tab:webinar-analysis',
+    '/api/webinar-momentum-analytics': 'tab:webinar-analysis',
 };
 // Default permission grants per role. Seeded into dashboard_role_permissions on
 // first boot; editable afterward by the Owner through the admin UI.
@@ -117,6 +119,7 @@ exports.DEFAULT_ROLE_PERMISSIONS = {
         'card:webinar-analysis:main',
         'card:webinar-analysis:upload',
         'card:webinar-analysis:registrations',
+        'card:webinar-analysis:analytics',
     ],
     sales_team: [
         'tab:funnel-analysis',
@@ -143,6 +146,7 @@ exports.DEFAULT_ROLE_PERMISSIONS = {
         'tab:webinar-analysis',
         'card:webinar-analysis:main',
         'card:webinar-analysis:registrations',
+        'card:webinar-analysis:analytics',
     ],
 };
 //# sourceMappingURL=permissions.js.map

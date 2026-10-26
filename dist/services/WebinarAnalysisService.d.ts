@@ -31,6 +31,8 @@ export interface SegmentReport {
     };
     reRegisteredToday: CountPct | null;
 }
+export type SegmentKey = 'current' | 'previousNotPaid' | 'alreadyPaid' | 'organic';
+export type SegmentMetricKey = 'total' | 'attended' | 'totalChats' | 'peakConcurrent' | 'stayedTillMiddle' | 'stayedTillEnd2hr' | 'stayedTill150Min' | 'stayedTill180Min' | 'conversions' | 'reRegisteredToday';
 export interface WebinarReport {
     webinar: {
         id: string;
@@ -96,6 +98,16 @@ export interface ChatPersonRow {
     signedUp: boolean;
     chatCount: number;
 }
+export interface SegmentMemberRow {
+    email: string;
+    name: string;
+    number: string;
+    signedUp: boolean;
+    signupDate: string | null;
+    referralCode: string | null;
+    attended: boolean;
+    totalMin: number;
+}
 export interface AttendeeDetail {
     email: string;
     name: string;
@@ -135,8 +147,14 @@ export declare class WebinarAnalysisService {
     private fetchPaidSheet;
     private loadBatch;
     private enrich;
+    private getStayCutoffs;
+    private filterMembersForMetric;
     private computeSegmentMetrics;
+    private partitionIntoSegments;
     getReport(batchId: string, attendedThresholdMin: number): Promise<WebinarReport>;
+    private static readonly SEGMENT_MEMBER_SORT_FIELDS;
+    private segmentMemberRows;
+    getSegmentMembers(batchId: string, segmentKey: SegmentKey, metricKey: SegmentMetricKey, attendedThresholdMin: number, page: number, pageSize: number, sortBy?: string, sortDir?: SortDir, search?: string): Promise<PagedResult<SegmentMemberRow>>;
     private static readonly MAIN_SORT_FIELDS;
     private static readonly NOT_JOINED_SORT_FIELDS;
     private static readonly NOT_REGISTERED_SORT_FIELDS;

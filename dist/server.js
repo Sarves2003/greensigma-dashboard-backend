@@ -26,6 +26,7 @@ const emandateTracker_1 = __importDefault(require("./routes/emandateTracker"));
 const salesCalls_1 = __importDefault(require("./routes/salesCalls"));
 const webinarAnalysis_1 = __importDefault(require("./routes/webinarAnalysis"));
 const webinarRegistrations_1 = __importDefault(require("./routes/webinarRegistrations"));
+const webinarMomentumAnalytics_1 = __importDefault(require("./routes/webinarMomentumAnalytics"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 5000;
@@ -62,6 +63,7 @@ app.use('/api/emandate-tracker', auth_1.requireAuth, (0, auth_1.requirePermissio
 app.use('/api/sales-calls', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/sales-calls']), salesCalls_1.default);
 app.use('/api/webinar-analysis', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/webinar-analysis']), webinarAnalysis_1.default);
 app.use('/api/webinar-registrations', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/webinar-registrations']), webinarRegistrations_1.default);
+app.use('/api/webinar-momentum-analytics', auth_1.requireAuth, (0, auth_1.requirePermission)(permissions_1.ROUTE_PERMISSION_MAP['/api/webinar-momentum-analytics']), webinarMomentumAnalytics_1.default);
 // Health check
 app.get('/api/health', (req, res) => {
     res.json({

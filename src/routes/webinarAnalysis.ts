@@ -1,7 +1,19 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
-import { WebinarAnalysisService } from '../services/WebinarAnalysisService';
+import { WebinarAnalysisService, SegmentKey, SegmentMetricKey } from '../services/WebinarAnalysisService';
 import { APIResponse } from '../types';
+
+const SEGMENT_KEYS: SegmentKey[] = ['current', 'previousNotPaid', 'alreadyPaid', 'organic'];
+const SEGMENT_METRIC_KEYS: SegmentMetricKey[] = [
+  'total', 'attended', 'totalChats', 'peakConcurrent',
+  'stayedTillMiddle', 'stayedTillEnd2hr', 'stayedTill150Min', 'stayedTill180Min',
+  'conversions', 'reRegisteredToday',
+];
+
+function resolveMetric(req: Request): SegmentMetricKey {
+  const m = req.query.metric;
+  return typeof m === 'string' && (SEGMENT_METRIC_KEYS as string[]).includes(m) ? (m as SegmentMetricKey) : 'total';
+}
 
 const router = Router();
 const service = new WebinarAnalysisService();
@@ -207,6 +219,23 @@ router.get('/chat-people/:id', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching chat people:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch chat people', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
+router.get('/segment-members/:id/:segmentKey', async (req: Request, res: Response) => {
+  try {
+    const segmentKey = req.params.segmentKey as SegmentKey;
+    if (!SEGMENT_KEYS.includes(segmentKey)) {
+      res.status(400).json({ success: false, error: `Unknown segment "${req.params.segmentKey}"`, timestamp: new Date().toISOString() } as APIResponse<null>);
+      return;
+    }
+    const { page, pageSize } = resolvePage(req);
+    const { sortBy, sortDir } = resolveSort(req);
+    const data = await service.getSegmentMembers(req.params.id, segmentKey, resolveMetric(req), resolveThreshold(req), page, pageSize, sortBy, sortDir, resolveSearch(req));
+    res.json({ success: true, data, timestamp: new Date().toISOString() } as APIResponse<any>);
+  } catch (error) {
+    console.error('Error fetching segment members:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch segment members', timestamp: new Date().toISOString() } as APIResponse<null>);
   }
 });
 
