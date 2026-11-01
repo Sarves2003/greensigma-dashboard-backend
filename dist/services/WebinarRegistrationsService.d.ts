@@ -1,3 +1,11 @@
+export interface LiveRegistrationRow {
+    name: string;
+    phone: string;
+    email: string;
+    offering: string;
+    webinarDate: Date;
+    paidAt: Date | null;
+}
 export interface WebinarRegSummaryRow {
     id: string;
     webinarType: string;
@@ -42,6 +50,7 @@ type SortDir = 'asc' | 'desc';
 export declare class WebinarRegistrationsService {
     listWebinars(): Promise<WebinarRegSummaryRow[]>;
     private titleCase;
+    getSuccessfulRegistrationsSince(cutoverDate: Date): Promise<LiveRegistrationRow[]>;
     private loadDocs;
     private buildPersonRows;
     getSummary(occurrenceId: string): Promise<WebinarRegSummary>;

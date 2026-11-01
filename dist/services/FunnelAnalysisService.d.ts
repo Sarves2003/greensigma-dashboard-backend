@@ -12,7 +12,9 @@ export interface BatchResolution {
 export declare class FunnelAnalysisService {
     private registrationCache;
     private paidCache;
+    private webinarRegSvc;
     getBatchDates(): Promise<BatchDateDoc[]>;
+    private syncLiveWebinarDates;
     addBatchDate(dateStr: string): Promise<void>;
     removeBatchDate(id: string): Promise<void>;
     private getSortedMasterDates;

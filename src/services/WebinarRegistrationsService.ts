@@ -46,6 +46,17 @@ interface RegistrationDoc {
   tracking?: { clientIp?: string; userAgent?: string; fbp?: string; fbc?: string; sourceUrl?: string };
 }
 
+// Shape FunnelAnalysisService/WebinarAnalysisService's own RegistrationRow needs — lets both of them
+// consume this collection without caring that it's Mongo instead of a parsed sheet CSV underneath.
+export interface LiveRegistrationRow {
+  name: string;
+  phone: string;
+  email: string;
+  offering: string;
+  webinarDate: Date;
+  paidAt: Date | null;
+}
+
 export interface WebinarRegSummaryRow {
   id: string;
   webinarType: string;
@@ -165,6 +176,45 @@ export class WebinarRegistrationsService {
 
   private titleCase(s: string): string {
     return (s || '').split(/[-_]/).map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w)).join(' ');
+  }
+
+  // ============ Feed for the manual "webinar registered" sheet's replacement ============
+  // From 25 Oct 2026 onward, FunnelAnalysisService/WebinarAnalysisService read registrations straight
+  // from here instead of a hand-maintained Google Sheet — this collection already captures the exact
+  // same ₹79/₹99 checkout data live, with a clean webinarDateISO instead of a free-text "Offering"
+  // string to regex-parse. Only successful payments are returned, matching what the sheet ever
+  // contained (it was always an export of paid registrations only, never failed/abandoned attempts).
+  //
+  // One row per PERSON per webinar occurrence, not per success document — confirmed in real data that
+  // the same person can have more than one 'success' document for the same webinar a few minutes
+  // apart (e.g. a Razorpay webhook firing twice, or a genuine repeat payment), which would otherwise
+  // double-count them against the old sheet's implicit one-row-per-registrant grain.
+  async getSuccessfulRegistrationsSince(cutoverDate: Date): Promise<LiveRegistrationRow[]> {
+    const db = getDatabase();
+    const cutoverISO = cutoverDate.toISOString().slice(0, 10);
+    const docs = await db
+      .collection<RegistrationDoc>(COLLECTION)
+      .find({ status: 'success', webinarDateISO: { $gte: cutoverISO } })
+      .project({ name: 1, phone: 1, buyerContact: 1, buyerEmail: 1, webinarType: 1, webinarDate: 1, webinarDateISO: 1, verifiedAt: 1, updatedAt: 1 })
+      .sort({ createdAt: 1 })
+      .toArray();
+
+    const byPersonWebinar = new Map<string, LiveRegistrationRow>();
+    for (const d of docs) {
+      if (!d.webinarDateISO) continue;
+      const phone = normalizePhone(d.buyerContact || d.phone);
+      const key = `${phone}_${d.webinarDateISO}`;
+      if (byPersonWebinar.has(key)) continue; // keep the first (earliest) success doc for this person+webinar
+      byPersonWebinar.set(key, {
+        name: d.name || '',
+        phone,
+        email: normalizeEmail(d.buyerEmail),
+        offering: `${this.titleCase(d.webinarType || '')} - ${d.webinarDate || d.webinarDateISO}`,
+        webinarDate: new Date(`${d.webinarDateISO}T00:00:00.000Z`),
+        paidAt: d.verifiedAt || d.updatedAt || null,
+      });
+    }
+    return Array.from(byPersonWebinar.values());
   }
 
   // ============ Core: load + dedupe into one row per person ============

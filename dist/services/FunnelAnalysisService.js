@@ -8,11 +8,18 @@ const axios_1 = __importDefault(require("axios"));
 const sync_1 = require("csv-parse/sync");
 const mongodb_1 = require("mongodb");
 const database_1 = require("../config/database");
+const WebinarRegistrationsService_1 = require("./WebinarRegistrationsService");
 const WEBINAR_REGISTRATIONS_CSV_URL = process.env.WEBINAR_REGISTRATIONS_CSV_URL ||
     'https://docs.google.com/spreadsheets/d/e/2PACX-1vRmL4IPqIR0FI5gpD1B9d75Flo-M_FV79pD12k2204zTJRdrTnjrnDIO7RaYtAizQGlo7fbfx23jfJ4/pub?gid=396802957&single=true&output=csv';
 const WEBINAR_PAID_CSV_URL = process.env.WEBINAR_PAID_CSV_URL ||
     'https://docs.google.com/spreadsheets/d/e/2PACX-1vSUirjwWnGgKXI6-u5PHlpjuiNastnqr_FBdIfMFthKOoQLrKz_4McjONeLYgy10BCcdV3eKLo-vqvr/pub?gid=444686195&single=true&output=csv';
 const SHEET_CACHE_TTL_MS = 10 * 60 * 1000;
+// 25 Oct 2026 — the Owner confirmed the "webinar registered" sheet stops being hand-maintained from
+// this date; registrations for any webinar dated on/after this switch to the live
+// `webinar_registrations` Mongo collection (the same ₹79/₹99 checkout data, captured automatically)
+// via WebinarRegistrationsService, instead of a manual CSV paste. Sheet rows for dates before this
+// stay exactly as they were — this never needs backfilling, only new webinars stop needing the sheet.
+const REGISTRATION_SOURCE_CUTOVER = Date.UTC(2026, 9, 25);
 const GENERIC_REFERRAL_CODES = new Set(['SIGMA2026', 'SIGMA2025']);
 // userdetail.type splits the paid tier into 'Tribe' (monthly) and 'TribeYearly' (annual) — both
 // are real conversions and must count together, or "Tribe" totals collapse toward zero since
@@ -118,6 +125,7 @@ class FunnelAnalysisService {
     constructor() {
         this.registrationCache = null;
         this.paidCache = null;
+        this.webinarRegSvc = new WebinarRegistrationsService_1.WebinarRegistrationsService();
     }
     // ============ Webinar batch dates (user-managed, persisted) ============
     async getBatchDates() {
@@ -133,7 +141,35 @@ class FunnelAnalysisService {
                 await col.insertMany(seeded);
             }
         }
+        await this.syncLiveWebinarDates(col);
         return col.find().sort({ date: 1 }).toArray();
+    }
+    // Tops up the master list from the live webinar_registrations collection so a new webinar never
+    // needs a manual "Manage Webinar Dates" click again — same spirit as the registration-source
+    // cutover above. Scoped to REGISTRATION_SOURCE_CUTOVER (never earlier) so this can only ever add
+    // dates for webinars that happened after the sheet stopped being the source of truth; it can't
+    // retroactively insert some pre-cutover date the Owner never added, which would shift the Paid
+    // sheet's fuzzy-match attribution for older batches in a way nobody asked for. Idempotent — safe to
+    // call on every getBatchDates(), since it only ever inserts a date it can't already find by exact
+    // match (same equality check resolveBatch's own 'exact' method uses).
+    async syncLiveWebinarDates(col) {
+        const existing = await col.find().toArray();
+        const existingTimes = new Set(existing.map((d) => new Date(d.date).getTime()));
+        const liveWebinars = await this.webinarRegSvc.listWebinars();
+        const toInsert = [];
+        for (const w of liveWebinars) {
+            if (!w.webinarDateISO)
+                continue;
+            const date = new Date(`${w.webinarDateISO}T00:00:00.000Z`);
+            if (date.getTime() < REGISTRATION_SOURCE_CUTOVER)
+                continue;
+            if (existingTimes.has(date.getTime()))
+                continue;
+            existingTimes.add(date.getTime());
+            toInsert.push({ date, label: date.toISOString().slice(0, 10) });
+        }
+        if (toInsert.length > 0)
+            await col.insertMany(toInsert);
     }
     async addBatchDate(dateStr) {
         const db = (0, database_1.getDatabase)();
@@ -184,7 +220,7 @@ class FunnelAnalysisService {
         }
         const response = await axios_1.default.get(WEBINAR_REGISTRATIONS_CSV_URL, { responseType: 'text', timeout: 20000 });
         const records = (0, sync_1.parse)(response.data, { columns: true, skip_empty_lines: true, relax_column_count: true });
-        const rows = records.map((r) => {
+        const sheetRows = records.map((r) => {
             const offering = (r['Offering'] || '').trim();
             const bookedOnRaw = (r['Booked On'] || '').trim();
             return {
@@ -196,6 +232,14 @@ class FunnelAnalysisService {
                 bookedOn: bookedOnRaw ? new Date(bookedOnRaw.replace(',', '')) : null,
             };
         });
+        // Drop any sheet rows at/after the cutover (a stray manual paste shouldn't double-count against
+        // the live collection) and splice in the live collection's own rows for that period instead.
+        const preCutover = sheetRows.filter((r) => !r.webinarDate || r.webinarDate.getTime() < REGISTRATION_SOURCE_CUTOVER);
+        const liveRows = await this.webinarRegSvc.getSuccessfulRegistrationsSince(new Date(REGISTRATION_SOURCE_CUTOVER));
+        const rows = [
+            ...preCutover,
+            ...liveRows.map((r) => ({ name: r.name, phone: r.phone, email: r.email, offering: r.offering, webinarDate: r.webinarDate, bookedOn: r.paidAt })),
+        ];
         this.registrationCache = { data: rows, ts: now };
         return rows;
     }

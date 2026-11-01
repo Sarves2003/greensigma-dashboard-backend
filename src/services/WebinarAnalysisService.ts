@@ -3,6 +3,7 @@ import { parse } from 'csv-parse/sync';
 import { ObjectId } from 'mongodb';
 import { getDatabase } from '../config/database';
 import { FunnelAnalysisService } from './FunnelAnalysisService';
+import { WebinarRegistrationsService } from './WebinarRegistrationsService';
 
 const WEBINAR_REGISTRATIONS_CSV_URL =
   process.env.WEBINAR_REGISTRATIONS_CSV_URL ||
@@ -14,6 +15,13 @@ const WEBINAR_PAID_CSV_URL =
 
 const SHEET_CACHE_TTL_MS = 10 * 60 * 1000;
 const COLLECTION = 'webinar_analysis_batches';
+
+// Same cutover as FunnelAnalysisService: from 25 Oct 2026, registrations come live from the
+// `webinar_registrations` Mongo collection instead of the hand-maintained "webinar registered"
+// sheet — see FunnelAnalysisService's REGISTRATION_SOURCE_CUTOVER for the full rationale. Kept as its
+// own constant (not imported) following this codebase's existing convention of duplicating small
+// per-service constants rather than sharing them across services.
+const REGISTRATION_SOURCE_CUTOVER = Date.UTC(2026, 9, 25);
 
 const TRIBE_TYPES = new Set(['Tribe', 'TribeYearly']);
 
@@ -460,6 +468,7 @@ export class WebinarAnalysisService {
   private registrationCache: { data: RegistrationRow[]; ts: number } | null = null;
   private paidCache: { data: PaidSheetRow[]; ts: number } | null = null;
   private funnelSvc = new FunnelAnalysisService();
+  private webinarRegSvc = new WebinarRegistrationsService();
 
   // ============ Upload & parse ============
   async uploadWebinar(participantsCsv: Buffer, chatTxt: Buffer): Promise<WebinarSummary> {
@@ -604,7 +613,7 @@ export class WebinarAnalysisService {
 
     const response = await axios.get(WEBINAR_REGISTRATIONS_CSV_URL, { responseType: 'text', timeout: 20000 });
     const records: any[] = parse(response.data, { columns: true, skip_empty_lines: true, relax_column_count: true });
-    const rows: RegistrationRow[] = records.map((r) => {
+    const sheetRows: RegistrationRow[] = records.map((r) => {
       const offering = (r['Offering'] || '').trim();
       return {
         name: (r['Name'] || '').trim(),
@@ -614,6 +623,14 @@ export class WebinarAnalysisService {
         webinarDate: parseLooseDate(offering),
       };
     });
+
+    // Same cutover as FunnelAnalysisService — see REGISTRATION_SOURCE_CUTOVER above.
+    const preCutover = sheetRows.filter((r) => !r.webinarDate || r.webinarDate.getTime() < REGISTRATION_SOURCE_CUTOVER);
+    const liveRows = await this.webinarRegSvc.getSuccessfulRegistrationsSince(new Date(REGISTRATION_SOURCE_CUTOVER));
+    const rows: RegistrationRow[] = [
+      ...preCutover,
+      ...liveRows.map((r) => ({ name: r.name, phone: r.phone, email: r.email, offering: r.offering, webinarDate: r.webinarDate as Date | null })),
+    ];
 
     this.registrationCache = { data: rows, ts: now };
     return rows;

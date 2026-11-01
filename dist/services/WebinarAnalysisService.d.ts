@@ -139,6 +139,7 @@ export declare class WebinarAnalysisService {
     private registrationCache;
     private paidCache;
     private funnelSvc;
+    private webinarRegSvc;
     uploadWebinar(participantsCsv: Buffer, chatTxt: Buffer): Promise<WebinarSummary>;
     private parseParticipantsCsv;
     private attachChat;
