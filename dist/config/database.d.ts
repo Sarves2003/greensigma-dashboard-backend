@@ -17,5 +17,7 @@ export declare const COLLECTIONS: {
     readonly WEBINAR_BATCH_DATES: "webinar_batch_dates";
     readonly DASHBOARD_USERS: "dashboard_users";
     readonly DASHBOARD_ROLE_PERMISSIONS: "dashboard_role_permissions";
+    readonly COLLABORATION_FIELDS: "collaboration_fields";
+    readonly COLLABORATION_RECORDS: "collaboration_records";
 };
 //# sourceMappingURL=database.d.ts.map

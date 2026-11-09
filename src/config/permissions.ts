@@ -84,6 +84,11 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'card:webinar-analysis:upload', label: 'Upload Webinar Data', type: 'card', tabKey: 'tab:webinar-analysis' },
   { key: 'card:webinar-analysis:registrations', label: 'Webinar Registrations (Payments)', type: 'card', tabKey: 'tab:webinar-analysis' },
   { key: 'card:webinar-analysis:analytics', label: 'Analytics (Conversion & Attendance Trends)', type: 'card', tabKey: 'tab:webinar-analysis' },
+
+  { key: 'tab:collaboration', label: 'Collaboration', type: 'tab' },
+  { key: 'card:collaboration:followup', label: 'Followup List', type: 'card', tabKey: 'tab:collaboration' },
+  { key: 'card:collaboration:live', label: 'Live List', type: 'card', tabKey: 'tab:collaboration' },
+  { key: 'card:collaboration:summary', label: 'Summary', type: 'card', tabKey: 'tab:collaboration' },
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
@@ -112,6 +117,7 @@ export const ROUTE_PERMISSION_MAP: Record<string, string> = {
   '/api/webinar-analysis': 'tab:webinar-analysis',
   '/api/webinar-registrations': 'tab:webinar-analysis',
   '/api/webinar-momentum-analytics': 'tab:webinar-analysis',
+  '/api/collaboration': 'tab:collaboration',
 };
 
 // Default permission grants per role. Seeded into dashboard_role_permissions on
@@ -143,6 +149,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:webinar-analysis:upload',
     'card:webinar-analysis:registrations',
     'card:webinar-analysis:analytics',
+    'tab:collaboration',
+    'card:collaboration:followup',
+    'card:collaboration:live',
+    'card:collaboration:summary',
   ],
   sales_team: [
     'tab:funnel-analysis',
@@ -170,5 +180,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, string[]> = {
     'card:webinar-analysis:main',
     'card:webinar-analysis:registrations',
     'card:webinar-analysis:analytics',
+    'tab:collaboration',
+    'card:collaboration:followup',
+    'card:collaboration:live',
+    'card:collaboration:summary',
   ],
 };

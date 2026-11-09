@@ -190,3 +190,34 @@ export interface RolePermissionDoc {
   permissions: string[];
   updatedAt?: Date;
 }
+
+// Collaboration tab (influencer/affiliate tracking): a Zoho-style custom-field CRM
+// list. Field defs describe the schema per list; records hold a free-form `values`
+// map keyed by field.key so new columns never require a migration.
+export type CollaborationListType = 'followup' | 'live';
+export type CollaborationStage = 'followup' | 'live';
+export type CollaborationFieldType = 'text' | 'number' | 'date' | 'dropdown' | 'checkbox' | 'textarea' | 'phone';
+
+export interface CollaborationFieldDef {
+  _id?: unknown;
+  listType: CollaborationListType;
+  key: string;
+  label: string;
+  type: CollaborationFieldType;
+  options?: string[];
+  required?: boolean;
+  order: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CollaborationRecord {
+  _id?: unknown;
+  stage: CollaborationStage;
+  values: Record<string, any>;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy?: string;
+  updatedBy?: string;
+  promotedAt?: Date;
+}

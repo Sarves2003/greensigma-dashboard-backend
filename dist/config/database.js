@@ -51,5 +51,7 @@ exports.COLLECTIONS = {
     WEBINAR_BATCH_DATES: 'webinar_batch_dates',
     DASHBOARD_USERS: 'dashboard_users',
     DASHBOARD_ROLE_PERMISSIONS: 'dashboard_role_permissions',
+    COLLABORATION_FIELDS: 'collaboration_fields',
+    COLLABORATION_RECORDS: 'collaboration_records',
 };
 //# sourceMappingURL=database.js.map
