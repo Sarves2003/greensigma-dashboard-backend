@@ -5,6 +5,20 @@ const BrokerRepository_1 = require("../repository/BrokerRepository");
 const StockListRepository_1 = require("../repository/StockListRepository");
 const RealizedReturnsRepository_1 = require("../repository/RealizedReturnsRepository");
 const UserRepository_1 = require("../repository/UserRepository");
+// The strategy's one confirmed defensive asset — the buy leg of every regime-triggered sell
+// (regimeAction 'full' or 'half') lands here. SKYGOLD was deliberately excluded: real data shows
+// it also gets bought via ordinary, non-regime-tagged BUY rebalances (an actual momentum pick
+// sometimes, not only a defensive one), so treating it as "gold" would overcount.
+const DEFENSIVE_ASSET_SYMBOL = 'GOLDBEES';
+// Classifies a portfolio's CURRENT holdings snapshot — not its rebalance intent, since sell/buy legs
+// can partially fail at the broker (confirmed in real data: orderStatus 'FAILED' entries sit
+// alongside 'OPENED' ones in the same regime-sell batch), so actual holdings are the source of truth.
+function classifyRegimeStatus(stockDetails) {
+    const holdings = (stockDetails || []).map((h) => h.tradingsymbol).filter(Boolean);
+    if (holdings.length === 0 || !holdings.includes(DEFENSIVE_ASSET_SYMBOL))
+        return null;
+    return holdings.length === 1 ? 'full_gold' : 'half_gold';
+}
 class UnrealizedPnlService {
     constructor() {
         this.portfolioRepository = new BrokerRepository_1.PortfolioRepository();
@@ -74,6 +88,7 @@ class UnrealizedPnlService {
             portfolioId,
             userId: portfolio.userId,
             portfolioName: portfolio.portfolioName || 'Unnamed',
+            borkrageType: portfolio.borkrageType || '',
             createdAt: portfolio.createdAt,
             updatedAt: portfolio.updatedAt,
             fromBacktest: !!portfolio.fromBacktest,
@@ -83,6 +98,8 @@ class UnrealizedPnlService {
             pnlPercent: investedValue !== 0 ? (pnl / investedValue) * 100 : 0,
             rebalanceCount: rebalanceStats?.rebalanceCount || 0,
             stocksTraded: rebalanceStats?.stocksTraded || 0,
+            rebalanceDates: rebalanceStats?.dates || [],
+            regimeStatus: classifyRegimeStatus(portfolio.stockDetails),
             holdings,
             investmentCapital,
             freeCash: portfolio.freeCash || 0,

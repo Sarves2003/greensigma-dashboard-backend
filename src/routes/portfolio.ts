@@ -23,7 +23,7 @@ function buildFilterOptions(req: Request): FilterOptions {
     };
   }
 
-  const brokerTypes = brokerTypesStr ? brokerTypesStr.split(',') : ['kite', 'zebu'];
+  const brokerTypes = brokerTypesStr ? brokerTypesStr.split(',') : ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'];
 
   return {
     dateRange: {

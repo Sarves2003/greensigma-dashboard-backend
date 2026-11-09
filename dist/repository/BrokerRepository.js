@@ -27,7 +27,7 @@ class BrokerRepository extends BaseRepository_1.BaseRepository {
     }
     async getRealBrokers() {
         return this.findMany({
-            borkrageType: { $in: ['kite', 'zebu'] },
+            borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
             apiKey: { $exists: true },
         });
     }
@@ -107,13 +107,13 @@ class PortfolioRepository extends BaseRepository_1.BaseRepository {
     async getLiveRealPortfolios() {
         return this.findMany({
             isInvested: true,
-            borkrageType: { $in: ['kite', 'zebu'] },
+            borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
         });
     }
     async getLiveRealPortfoliosWithHoldings() {
         return this.findMany({
             isInvested: true,
-            borkrageType: { $in: ['kite', 'zebu'] },
+            borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
             stockDetails: { $exists: true, $ne: [], $type: 'array' },
         });
     }

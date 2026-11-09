@@ -70,6 +70,21 @@ router.get('/table/:webinarId', async (req: Request, res: Response) => {
   }
 });
 
+router.put('/ad-spend/:webinarId', async (req: Request, res: Response) => {
+  try {
+    const adSpend = Number(req.body?.adSpend);
+    if (!Number.isFinite(adSpend) || adSpend < 0) {
+      res.status(400).json({ success: false, error: 'adSpend must be a non-negative number', timestamp: new Date().toISOString() } as APIResponse<null>);
+      return;
+    }
+    await service.setAdSpend(req.params.webinarId, adSpend);
+    res.json({ success: true, data: null, timestamp: new Date().toISOString() } as APIResponse<null>);
+  } catch (error) {
+    console.error('Error saving webinar ad spend:', error);
+    res.status(500).json({ success: false, error: 'Failed to save ad spend', timestamp: new Date().toISOString() } as APIResponse<null>);
+  }
+});
+
 router.get('/table/:webinarId/download', async (req: Request, res: Response) => {
   try {
     const { sortBy, sortDir } = resolveSort(req);

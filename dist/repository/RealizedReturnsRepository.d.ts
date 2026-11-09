@@ -3,6 +3,7 @@ import { RealizedReturnsDoc } from '../types';
 export interface RebalanceStats {
     rebalanceCount: number;
     stocksTraded: number;
+    dates: string[];
 }
 export declare class RealizedReturnsRepository extends BaseRepository<RealizedReturnsDoc> {
     protected collectionName: "REALIZED_RETURNS";

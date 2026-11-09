@@ -329,7 +329,7 @@ class UsageAnalysisService {
             // means the same thing as "shows up in Live P&L" there.
             db
                 .collection('portfolio_details')
-                .find({ userId, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] }, stockDetails: { $exists: true, $ne: [], $type: 'array' } })
+                .find({ userId, isInvested: true, borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] }, stockDetails: { $exists: true, $ne: [], $type: 'array' } })
                 .project({ createdAt: 1 })
                 .toArray(),
         ]);

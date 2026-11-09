@@ -533,7 +533,7 @@ export class EmandateTrackerService {
       relevantUserIds.length > 0
         ? db
             .collection('portfolio_details')
-            .find({ userId: { $in: relevantUserIds }, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })
+            .find({ userId: { $in: relevantUserIds }, isInvested: true, borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] } })
             .project({ _id: 1, borkrageType: 1 })
             .toArray()
         : Promise.resolve([]),

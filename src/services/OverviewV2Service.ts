@@ -128,7 +128,7 @@ export class OverviewV2Service {
   private async getAvgDaysToFirstPortfolio(signupIdsStr: string[], signups: any[]): Promise<number | null> {
     const db = getDatabase();
     const deployments = await db.collection('portfolio_details')
-      .find({ userId: { $in: signupIdsStr }, isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })
+      .find({ userId: { $in: signupIdsStr }, isInvested: true, borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] } })
       .project({ userId: 1, createdAt: 1 })
       .sort({ createdAt: 1 })
       .toArray();
@@ -194,7 +194,7 @@ export class OverviewV2Service {
       db.collection('backtest_Result').distinct('userId', scoped()),
       db.collection('ETF_Backtest_Result').countDocuments(scoped({ status: 'Success' })),
       db.collection('ETF_Backtest_Result').distinct('userId', scoped()),
-      db.collection('portfolio_details').countDocuments(scoped({ isInvested: true, borkrageType: { $in: ['kite', 'zebu'] } })),
+      db.collection('portfolio_details').countDocuments(scoped({ isInvested: true, borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] } })),
       db.collection('borkrage_details').distinct('userId', scoped()),
     ]);
 
@@ -314,7 +314,7 @@ export class OverviewV2Service {
       const query: any = { userId: { $in: userIdsStr } };
       if (type === 'real') {
         query.isInvested = true;
-        query.borkrageType = { $in: ['kite', 'zebu'] };
+        query.borkrageType = { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] };
       } else {
         query.borkrageType = 'paper_trade';
       }
@@ -368,7 +368,7 @@ export class OverviewV2Service {
       const deployedUsers = await db.collection('portfolio_details').distinct('userId', {
         userId: { $in: signupIdsStr },
         isInvested: true,
-        borkrageType: { $in: ['kite', 'zebu'] },
+        borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
       });
       const deployedCount = deployedUsers.length;
 
@@ -399,7 +399,7 @@ export class OverviewV2Service {
       const realUsers = await db.collection('portfolio_details').distinct('userId', {
         userId: { $in: userIdsStr },
         isInvested: true,
-        borkrageType: { $in: ['kite', 'zebu'] },
+        borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
       });
 
       labels.push(monthLabel(key));

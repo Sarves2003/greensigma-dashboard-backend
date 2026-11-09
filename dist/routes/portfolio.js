@@ -21,7 +21,7 @@ function buildFilterOptions(req) {
             endDate: result.endDate,
         };
     }
-    const brokerTypes = brokerTypesStr ? brokerTypesStr.split(',') : ['kite', 'zebu'];
+    const brokerTypes = brokerTypesStr ? brokerTypesStr.split(',') : ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'];
     return {
         dateRange: {
             startDate: dateRange.startDate,

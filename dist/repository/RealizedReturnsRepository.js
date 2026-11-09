@@ -23,6 +23,7 @@ class RealizedReturnsRepository extends BaseRepository_1.BaseRepository {
             statsMap.set(doc.portfolioId.toString(), {
                 rebalanceCount: uniqueDates.size,
                 stocksTraded: entries.length,
+                dates: [...uniqueDates],
             });
         }
         return statsMap;

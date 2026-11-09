@@ -62,6 +62,21 @@ router.get('/table/:webinarId', async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to fetch table', timestamp: new Date().toISOString() });
     }
 });
+router.put('/ad-spend/:webinarId', async (req, res) => {
+    try {
+        const adSpend = Number(req.body?.adSpend);
+        if (!Number.isFinite(adSpend) || adSpend < 0) {
+            res.status(400).json({ success: false, error: 'adSpend must be a non-negative number', timestamp: new Date().toISOString() });
+            return;
+        }
+        await service.setAdSpend(req.params.webinarId, adSpend);
+        res.json({ success: true, data: null, timestamp: new Date().toISOString() });
+    }
+    catch (error) {
+        console.error('Error saving webinar ad spend:', error);
+        res.status(500).json({ success: false, error: 'Failed to save ad spend', timestamp: new Date().toISOString() });
+    }
+});
 router.get('/table/:webinarId/download', async (req, res) => {
     try {
         const { sortBy, sortDir } = resolveSort(req);

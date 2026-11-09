@@ -13,7 +13,7 @@ class PortfolioAnalyticsService {
     // Get portfolio metrics
     async getPortfolioMetrics(filters) {
         const userIds = await this.getFilteredUserIds(filters);
-        const brokerTypes = filters.brokerTypes || ['kite', 'zebu', 'paper_trade'];
+        const brokerTypes = filters.brokerTypes || ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich', 'paper_trade'];
         const matchStage = {
             createdAt: { $gte: filters.dateRange.startDate, $lt: filters.dateRange.endDate },
             borkrageType: { $in: brokerTypes },
@@ -52,7 +52,7 @@ class PortfolioAnalyticsService {
                             $cond: [
                                 {
                                     $and: [
-                                        { $in: ['$borkrageType', ['kite', 'zebu']] },
+                                        { $in: ['$borkrageType', ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich']] },
                                         '$isInvested',
                                         { $gt: [{ $size: { $ifNull: ['$stockDetails', []] } }, 0] },
                                     ],
@@ -67,7 +67,7 @@ class PortfolioAnalyticsService {
                             $cond: [
                                 {
                                     $and: [
-                                        { $in: ['$borkrageType', ['kite', 'zebu']] },
+                                        { $in: ['$borkrageType', ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich']] },
                                         '$isInvested',
                                         { $gt: [{ $size: { $ifNull: ['$stockDetails', []] } }, 0] },
                                     ],
@@ -90,7 +90,7 @@ class PortfolioAnalyticsService {
                             $cond: [
                                 {
                                     $and: [
-                                        { $in: ['$borkrageType', ['kite', 'zebu']] },
+                                        { $in: ['$borkrageType', ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich']] },
                                         '$isInvested',
                                     ],
                                 },
@@ -149,7 +149,7 @@ class PortfolioAnalyticsService {
     // Get portfolio AUM trend over time (by broker type)
     async getPortfolioTrend(filters) {
         const userIds = await this.getFilteredUserIds(filters);
-        const brokerTypes = filters.brokerTypes || ['kite', 'zebu'];
+        const brokerTypes = filters.brokerTypes || ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'];
         const matchStage = {
             createdAt: { $gte: filters.dateRange.startDate, $lt: filters.dateRange.endDate },
             isInvested: true,
@@ -172,41 +172,44 @@ class PortfolioAnalyticsService {
             },
             { $sort: { '_id.date': 1, '_id.brokerType': 1 } },
         ]);
+        // One AUM field per real broker plus paper trade — every new broker added to REAL_BROKER_FIELDS
+        // automatically gets its own trend line without touching the accumulation loop below.
+        const REAL_BROKER_FIELDS = { kite: 'kiteAUM', zebu: 'zebuAUM', aliceblue: 'aliceblueAUM', dhan: 'dhanAUM', enrich: 'enrichAUM' };
+        const zeroRow = () => {
+            const row = { paperTradeAUM: 0 };
+            for (const field of Object.values(REAL_BROKER_FIELDS))
+                row[field] = 0;
+            return row;
+        };
         const trendByDate = {};
         trend.forEach(item => {
             const date = item._id.date;
             const brokerType = item._id.brokerType;
             if (!trendByDate[date]) {
-                trendByDate[date] = { date, kiteAUM: 0, zebuAUM: 0, paperTradeAUM: 0 };
+                trendByDate[date] = { date, ...zeroRow() };
             }
-            if (brokerType === 'kite') {
-                trendByDate[date].kiteAUM = item.dailyAUM;
-            }
-            else if (brokerType === 'zebu') {
-                trendByDate[date].zebuAUM = item.dailyAUM;
-            }
-            else if (brokerType === 'paper_trade') {
+            if (brokerType === 'paper_trade') {
                 trendByDate[date].paperTradeAUM = item.dailyAUM;
             }
+            else if (REAL_BROKER_FIELDS[brokerType]) {
+                trendByDate[date][REAL_BROKER_FIELDS[brokerType]] = item.dailyAUM;
+            }
         });
-        let cumulativeKite = 0, cumulativeZebu = 0, cumulativePaperTrade = 0;
+        const cumulative = { paperTradeAUM: 0, ...Object.fromEntries(Object.values(REAL_BROKER_FIELDS).map((f) => [f, 0])) };
         return Object.keys(trendByDate).sort().map(date => {
             const item = trendByDate[date];
-            cumulativeKite += item.kiteAUM;
-            cumulativeZebu += item.zebuAUM;
-            cumulativePaperTrade += item.paperTradeAUM;
-            return {
-                date,
-                kiteAUM: parseFloat(cumulativeKite.toFixed(2)),
-                zebuAUM: parseFloat(cumulativeZebu.toFixed(2)),
-                paperTradeAUM: parseFloat(cumulativePaperTrade.toFixed(2)),
-            };
+            const row = { date };
+            for (const field of ['paperTradeAUM', ...Object.values(REAL_BROKER_FIELDS)]) {
+                cumulative[field] += item[field];
+                row[field] = parseFloat(cumulative[field].toFixed(2));
+            }
+            return row;
         });
     }
     // Get capital distribution histogram
     async getPortfolioTypeBreakdown(filters) {
         const userIds = await this.getFilteredUserIds(filters);
-        const brokerTypes = filters.brokerTypes || ['kite', 'zebu', 'paper_trade'];
+        const brokerTypes = filters.brokerTypes || ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich', 'paper_trade'];
         const matchStage = {
             createdAt: { $gte: filters.dateRange.startDate, $lt: filters.dateRange.endDate },
             borkrageType: { $in: brokerTypes },
@@ -244,7 +247,7 @@ class PortfolioAnalyticsService {
     // Get top investors with pagination and detailed metrics
     async getTopInvestors(filters, limit = 10, offset = 0) {
         const userIds = await this.getFilteredUserIds(filters);
-        const brokerTypes = filters.brokerTypes || ['kite', 'zebu'];
+        const brokerTypes = filters.brokerTypes || ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'];
         const matchStage = {
             createdAt: { $gte: filters.dateRange.startDate, $lt: filters.dateRange.endDate },
             borkrageType: { $in: brokerTypes },

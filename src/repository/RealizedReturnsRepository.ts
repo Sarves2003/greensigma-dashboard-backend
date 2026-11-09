@@ -5,6 +5,7 @@ import { RealizedReturnsDoc } from '../types';
 export interface RebalanceStats {
   rebalanceCount: number;
   stocksTraded: number;
+  dates: string[]; // one ISO calendar-day string per unique rebalance day — lets callers count rebalances within an arbitrary date range client-side, the same way SIP events are period-scoped
 }
 
 export class RealizedReturnsRepository extends BaseRepository<RealizedReturnsDoc> {
@@ -22,7 +23,7 @@ export class RealizedReturnsRepository extends BaseRepository<RealizedReturnsDoc
 
     for (const doc of docs as any[]) {
       const entries = doc.realizedReturns || [];
-      const uniqueDates = new Set(
+      const uniqueDates = new Set<string>(
         entries
           .filter((entry: any) => entry?.timestamp)
           .map((entry: any) => new Date(entry.timestamp).toISOString().slice(0, 10))
@@ -31,6 +32,7 @@ export class RealizedReturnsRepository extends BaseRepository<RealizedReturnsDoc
       statsMap.set(doc.portfolioId.toString(), {
         rebalanceCount: uniqueDates.size,
         stocksTraded: entries.length,
+        dates: [...uniqueDates],
       });
     }
 

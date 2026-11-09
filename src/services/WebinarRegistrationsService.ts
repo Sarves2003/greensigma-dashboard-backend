@@ -2,6 +2,17 @@ import { ObjectId } from 'mongodb';
 import { getDatabase } from '../config/database';
 
 const COLLECTION = 'webinar_registrations';
+// One doc per webinar occurrence (same `${webinarId}_${webinarDateISO}` id the rest of this service
+// uses), manually entered by ops — not derived from any ad platform. GST-exclusive by convention
+// (matches how the figure is quoted to ops verbally), GST is only added back in when computing CPL.
+const AD_SPEND_COLLECTION = 'webinar_ad_spend';
+const GST_RATE = 0.18;
+
+interface AdSpendDoc {
+  _id: string; // the occurrence id itself, not a generated ObjectId — one doc per webinar, upserted
+  adSpend: number;
+  updatedAt: Date;
+}
 
 function normalizePhone(raw: string | null | undefined): string {
   const digits = (raw || '').replace(/\D/g, '');
@@ -95,6 +106,10 @@ export interface WebinarRegSummary {
   welcomeMessageSent: number; // of totalRegistered, how many got the post-payment Telegram welcome message
   totalAttempts: number; // raw checkout-attempt DOCUMENT count for this occurrence (not deduped by person)
   totalDistinctPeople: number; // success + failed + notPaid — sanity-check total for this webinar
+  adSpend: number | null; // manually entered, GST-exclusive — see AD_SPEND_COLLECTION
+  cplWithoutGst: number | null; // adSpend / totalRegistered
+  cplWithGst: number | null; // (adSpend * 1.18) / totalRegistered
+  avgRegistrationsPerDay: number | null; // totalRegistered / days since the funnel's first checkout attempt (any outcome) through today
 }
 
 export interface PagedResult<T> {
@@ -284,15 +299,52 @@ export class WebinarRegistrationsService {
     const people = this.buildPersonRows(docs);
     const successRows = people.filter((p) => p.status === 'success');
     const amountCollected = successRows.reduce((sum, p) => sum + (p.amount || 0), 0);
+    const totalRegistered = successRows.length;
+    const adSpend = await this.getAdSpend(occurrenceId);
+
+    // Campaign window starts at the EARLIEST checkout attempt regardless of outcome (i.e. the
+    // moment the funnel started getting traffic at all, not just the first person who went on to
+    // pay) and runs through today — "per day" is a running pace, not a fixed historical window, so
+    // it keeps climbing as more days pass even before the webinar itself happens.
+    let avgRegistrationsPerDay: number | null = null;
+    if (people.length > 0 && totalRegistered > 0) {
+      const earliestAttemptMs = people.reduce(
+        (min, p) => Math.min(min, new Date(p.firstAttemptAt).getTime()),
+        Infinity
+      );
+      const dayMs = 1000 * 60 * 60 * 24;
+      const daysElapsed = Math.max(1, Math.ceil((Date.now() - earliestAttemptMs) / dayMs));
+      avgRegistrationsPerDay = Math.round((totalRegistered / daysElapsed) * 10) / 10;
+    }
+
     return {
-      totalRegistered: successRows.length,
+      totalRegistered,
       failed: people.filter((p) => p.status === 'failed').length,
       notPaid: people.filter((p) => p.status === 'notpaid').length,
       amountCollected,
       welcomeMessageSent: successRows.filter((p) => p.welcomeMessageSent).length,
       totalAttempts: docs.length,
       totalDistinctPeople: people.length,
+      adSpend,
+      cplWithoutGst: adSpend != null && totalRegistered > 0 ? adSpend / totalRegistered : null,
+      cplWithGst: adSpend != null && totalRegistered > 0 ? (adSpend * (1 + GST_RATE)) / totalRegistered : null,
+      avgRegistrationsPerDay,
     };
+  }
+
+  // ============ Ads spent (manual input, persisted per webinar occurrence) ============
+  async getAdSpend(occurrenceId: string): Promise<number | null> {
+    const db = getDatabase();
+    const doc = await db.collection<AdSpendDoc>(AD_SPEND_COLLECTION).findOne({ _id: occurrenceId } as any);
+    return doc ? doc.adSpend : null;
+  }
+
+  async setAdSpend(occurrenceId: string, adSpend: number): Promise<void> {
+    decodeOccurrenceId(occurrenceId); // throws on a malformed id, same validation every other method here gets for free via loadDocs
+    const db = getDatabase();
+    await db
+      .collection<AdSpendDoc>(AD_SPEND_COLLECTION)
+      .updateOne({ _id: occurrenceId } as any, { $set: { adSpend, updatedAt: new Date() } } as any, { upsert: true });
   }
 
   private matchesSearch(fields: (string | null | undefined)[], search?: string): boolean {

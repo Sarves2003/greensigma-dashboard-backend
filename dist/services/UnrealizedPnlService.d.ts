@@ -1,3 +1,4 @@
+export type RegimeStatus = 'full_gold' | 'half_gold' | null;
 export interface HoldingPnl {
     tradingsymbol: string;
     exchange: string;
@@ -17,6 +18,7 @@ export interface PortfolioPnl {
     portfolioId: string;
     userId: string;
     portfolioName: string;
+    borkrageType: string;
     createdAt?: Date;
     updatedAt?: Date;
     fromBacktest: boolean;
@@ -26,6 +28,8 @@ export interface PortfolioPnl {
     pnlPercent: number;
     rebalanceCount: number;
     stocksTraded: number;
+    rebalanceDates: string[];
+    regimeStatus: RegimeStatus;
     holdings: HoldingPnl[];
     investmentCapital: number | null;
     freeCash: number;

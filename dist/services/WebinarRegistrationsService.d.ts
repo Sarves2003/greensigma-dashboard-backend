@@ -39,6 +39,10 @@ export interface WebinarRegSummary {
     welcomeMessageSent: number;
     totalAttempts: number;
     totalDistinctPeople: number;
+    adSpend: number | null;
+    cplWithoutGst: number | null;
+    cplWithGst: number | null;
+    avgRegistrationsPerDay: number | null;
 }
 export interface PagedResult<T> {
     rows: T[];
@@ -54,6 +58,8 @@ export declare class WebinarRegistrationsService {
     private loadDocs;
     private buildPersonRows;
     getSummary(occurrenceId: string): Promise<WebinarRegSummary>;
+    getAdSpend(occurrenceId: string): Promise<number | null>;
+    setAdSpend(occurrenceId: string, adSpend: number): Promise<void>;
     private matchesSearch;
     private filteredRows;
     getTable(occurrenceId: string, category: RegCategory, page: number, pageSize: number, sortBy?: string, sortDir?: SortDir, search?: string): Promise<PagedResult<RegistrationPersonRow>>;

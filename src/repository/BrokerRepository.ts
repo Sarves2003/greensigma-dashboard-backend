@@ -29,7 +29,7 @@ export class BrokerRepository extends BaseRepository<BrokerDetails> {
 
   async getRealBrokers(): Promise<BrokerDetails[]> {
     return this.findMany({
-      borkrageType: { $in: ['kite', 'zebu'] },
+      borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
       apiKey: { $exists: true },
     } as any);
   }
@@ -120,14 +120,14 @@ export class PortfolioRepository extends BaseRepository<Portfolio> {
   async getLiveRealPortfolios(): Promise<Portfolio[]> {
     return this.findMany({
       isInvested: true,
-      borkrageType: { $in: ['kite', 'zebu'] },
+      borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
     } as Filter<Portfolio>);
   }
 
   async getLiveRealPortfoliosWithHoldings(): Promise<Portfolio[]> {
     return this.findMany({
       isInvested: true,
-      borkrageType: { $in: ['kite', 'zebu'] },
+      borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
       stockDetails: { $exists: true, $ne: [], $type: 'array' },
     } as any);
   }

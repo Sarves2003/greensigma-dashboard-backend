@@ -281,7 +281,7 @@ export class AnalyticsService {
 
     const matchStage: any = {
       createdAt: { $gte: filters.dateRange.startDate, $lt: filters.dateRange.endDate },
-      borkrageType: { $in: ['kite', 'zebu'] },
+      borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
       isInvested: true,
       stockDetails: { $exists: true, $ne: [], $type: 'array' },
     };
@@ -416,7 +416,7 @@ export class AnalyticsService {
         {
           $match: {
             createdAt: { $gte: filters.dateRange.startDate, $lt: filters.dateRange.endDate },
-            borkrageType: { $in: ['kite', 'zebu'] },
+            borkrageType: { $in: ['kite', 'zebu', 'aliceblue', 'dhan', 'enrich'] },
             isInvested: true,
             stockDetails: { $exists: true, $ne: [], $type: 'array' },
           },

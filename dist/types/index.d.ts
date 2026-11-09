@@ -37,7 +37,7 @@ export interface ETFBacktest {
 }
 export interface BrokerDetails {
     userId: string;
-    borkrageType: 'kite' | 'zebu' | 'paper_trade';
+    borkrageType: 'kite' | 'zebu' | 'aliceblue' | 'dhan' | 'enrich' | 'paper_trade';
     apiKey?: string;
     apiSecret?: string;
     createdAt: Date;
